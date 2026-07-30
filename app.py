@@ -202,11 +202,17 @@ if run_btn and uploaded_excel and not st.session_state.processing:
             pass
 
     stop_ev = threading.Event()   # never set → runs to completion
+    error_msg = None
     try:
         res = process_all(cfg, progress_cb=_progress_cb, stop_event=stop_ev)
     except Exception as e:
-        st.error(f"Processing error: {e}")
+        import traceback
+        error_msg = traceback.format_exc()
         res = None
+
+    if error_msg:
+        st.error(f"Processing error — check your Excel file and URLs")
+        st.code(error_msg)
 
     # drain remaining preview items
     try:
@@ -215,15 +221,18 @@ if run_btn and uploaded_excel and not st.session_state.processing:
     except Exception:
         pass
 
-    # Zip outputs
-    if res:
+    # Zip outputs — collect ALL image files written to out_dir
+    out_files = [f for f in Path(out_dir).rglob("*")
+                 if f.is_file() and f.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")]
+    if out_files:
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            for f in Path(out_dir).rglob("*"):
-                if f.is_file():
-                    zf.write(f, f.relative_to(out_dir))
+            for f in out_files:
+                zf.write(f, f.relative_to(out_dir))
         buf.seek(0)
         st.session_state.zip_bytes = buf.getvalue()
+    elif res and res.get("success", 0) == 0:
+        st.warning("No images were processed. Check that your Excel URLs are accessible.")
 
     st.session_state.results   = res
     st.session_state.processing = False
