@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+processed_images/
+processing.log
+.claude/
+*.log
