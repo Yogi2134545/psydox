@@ -523,20 +523,16 @@ def convert_to_4_5(img: Image.Image, cfg: dict) -> Image.Image:
 
     MARGIN = 0.06   # guaranteed breathing room on every edge
 
-    # When bbox covers most of the frame, treat full image as product
-    if bbox_coverage > 0.85:
-        pl, pt, pr, pb = 0, 0, orig_w, orig_h
-        pw, ph = orig_w, orig_h
+    # Always treat the full original image as the product —
+    # never crop based on bbox alone (prevents zooming into one product part)
+    pl, pt, pr, pb = 0, 0, orig_w, orig_h
+    pw, ph = orig_w, orig_h
 
-    # Scale product to fit within the margin zone
+    # Scale full image to fit within the margin zone
     max_pw = TW * (1 - 2 * MARGIN)
     max_ph = TH * (1 - 2 * MARGIN)
 
-    # All four constraints applied together — whichever is smallest wins:
-    #   1. product fits in margin zone
-    #   2. full image never exceeds canvas width
-    #   3. full image never exceeds canvas height
-    #   4. quality cap: don't upscale more than 2×
+    # Fit the full image inside the canvas with margin, no upscale beyond 2×
     scale = min(max_pw / pw, max_ph / ph,
                 TW  / orig_w, TH  / orig_h,
                 2.0)
