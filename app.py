@@ -161,47 +161,51 @@ with st.sidebar:
 
 # ── RUN ───────────────────────────────────────────────────────────────────────
 if run_btn and uploaded_excel and not st.session_state.processing:
-    st.session_state.processing    = True
+    st.session_state.processing      = True
     st.session_state.preview_history = []
-    st.session_state.preview_idx  = 0
-    st.session_state.results      = None
-    st.session_state.zip_bytes    = None
+    st.session_state.preview_idx     = 0
+    st.session_state.results         = None
+    st.session_state.zip_bytes       = None
 
-    # Save Excel to temp file
-    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
-        tmp.write(uploaded_excel.getvalue())
-        excel_path = tmp.name
+    # Save Excel to a persistent temp file (delete=False keeps it alive)
+    tmp_excel = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
+    tmp_excel.write(uploaded_excel.getvalue())
+    tmp_excel.flush()
+    tmp_excel.close()
+    excel_path = tmp_excel.name
 
-    out_dir = tempfile.mkdtemp(prefix="psydox_")
+    # Use a fixed temp dir name so it survives rerun
+    import hashlib as _hl
+    run_id  = _hl.md5(uploaded_excel.getvalue()).hexdigest()[:8]
+    out_dir = str(Path(tempfile.gettempdir()) / f"psydox_{run_id}")
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
 
     cfg = dict(
-        INPUT_EXCEL   = excel_path,
-        OUTPUT_FOLDER = out_dir,
-        TARGET_W      = int(target_w),
-        TARGET_H      = int(target_h),
-        JPEG_QUALITY  = int(jpeg_quality),
-        MAX_RETRIES   = int(max_retries),
+        INPUT_EXCEL     = excel_path,
+        OUTPUT_FOLDER   = out_dir,
+        TARGET_W        = int(target_w),
+        TARGET_H        = int(target_h),
+        JPEG_QUALITY    = int(jpeg_quality),
+        MAX_RETRIES     = int(max_retries),
         REQUEST_TIMEOUT = int(req_timeout),
-        USE_REMBG     = False,
-        BG_GREY       = int(bg_grey),
-        BG_RGB        = bg_rgb_cfg,
-        PACK_MODE     = pack_mode,
+        USE_REMBG       = False,
+        BG_GREY         = int(bg_grey),
+        BG_RGB          = bg_rgb_cfg,
+        PACK_MODE       = pack_mode,
     )
 
-    progress_bar  = st.progress(0, text="Starting…")
-    status_text   = st.empty()
+    progress_bar = st.progress(0, text="Starting…")
 
     def _progress_cb(done, total):
         pct = int(done / total * 100) if total else 0
         progress_bar.progress(pct, text=f"Processing {done} / {total} images…")
-        # drain preview queue
         try:
             while True:
                 st.session_state.preview_history.append(_preview_queue.get_nowait())
         except Exception:
             pass
 
-    stop_ev = threading.Event()   # never set → runs to completion
+    stop_ev   = threading.Event()
     error_msg = None
     try:
         res = process_all(cfg, progress_cb=_progress_cb, stop_event=stop_ev)
@@ -211,7 +215,7 @@ if run_btn and uploaded_excel and not st.session_state.processing:
         res = None
 
     if error_msg:
-        st.error(f"Processing error — check your Excel file and URLs")
+        st.error("Processing error — check your Excel file and URLs")
         st.code(error_msg)
 
     # drain remaining preview items
@@ -221,9 +225,12 @@ if run_btn and uploaded_excel and not st.session_state.processing:
     except Exception:
         pass
 
-    # Zip outputs — collect ALL image files written to out_dir
+    # Build ZIP from all output images
     out_files = [f for f in Path(out_dir).rglob("*")
                  if f.is_file() and f.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")]
+
+    st.write(f"DEBUG: found {len(out_files)} output files in {out_dir}")  # temp debug line
+
     if out_files:
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -231,10 +238,10 @@ if run_btn and uploaded_excel and not st.session_state.processing:
                 zf.write(f, f.relative_to(out_dir))
         buf.seek(0)
         st.session_state.zip_bytes = buf.getvalue()
-    elif res and res.get("success", 0) == 0:
-        st.warning("No images were processed. Check that your Excel URLs are accessible.")
+    else:
+        st.warning("No output images found. Check that your Excel URLs are publicly accessible.")
 
-    st.session_state.results   = res
+    st.session_state.results    = res
     st.session_state.processing = False
     st.rerun()
 
