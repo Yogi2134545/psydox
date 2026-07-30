@@ -71,12 +71,18 @@ class _QueueHandler(logging.Handler):
 
 _fmt = logging.Formatter("%(asctime)s  %(levelname)-7s  %(message)s", "%H:%M:%S")
 _qh  = _QueueHandler(); _qh.setFormatter(_fmt)
-_fh  = logging.FileHandler("processing.log", encoding="utf-8"); _fh.setFormatter(_fmt)
 _sh  = logging.StreamHandler(sys.stdout); _sh.setFormatter(_fmt)
 
 log = logging.getLogger("imgproc")
 log.setLevel(logging.INFO)
-log.addHandler(_qh); log.addHandler(_fh); log.addHandler(_sh)
+log.addHandler(_qh); log.addHandler(_sh)
+
+# File log only when writable (skip on Streamlit Cloud)
+try:
+    _fh = logging.FileHandler("processing.log", encoding="utf-8"); _fh.setFormatter(_fmt)
+    log.addHandler(_fh)
+except (PermissionError, OSError):
+    pass
 
 SUPPORTED_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 
