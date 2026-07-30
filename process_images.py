@@ -521,36 +521,22 @@ def convert_to_4_5(img: Image.Image, cfg: dict) -> Image.Image:
     pw, ph = pr - pl, pb - pt
     bbox_coverage = (pw * ph) / max(orig_w * orig_h, 1)
 
-    MARGIN = 0.06   # guaranteed breathing room on every edge
+    MARGIN = 0.04   # small breathing room on every edge
 
-    # Always treat the full original image as the product —
-    # never crop based on bbox alone (prevents zooming into one product part)
-    pl, pt, pr, pb = 0, 0, orig_w, orig_h
-    pw, ph = orig_w, orig_h
-
-    # Scale full image to fit within the margin zone
-    max_pw = TW * (1 - 2 * MARGIN)
-    max_ph = TH * (1 - 2 * MARGIN)
-
-    # Fit the full image inside the canvas with margin, no upscale beyond 2×
-    scale = min(max_pw / pw, max_ph / ph,
-                TW  / orig_w, TH  / orig_h,
-                2.0)
+    # Scale full original image to fit inside canvas with margin — never crop
+    scale = min(
+        TW * (1 - 2 * MARGIN) / orig_w,
+        TH * (1 - 2 * MARGIN) / orig_h,
+        2.0  # don't upscale more than 2×
+    )
 
     nw = max(1, int(orig_w * scale))
     nh = max(1, int(orig_h * scale))
     scaled = img.resize((nw, nh), Image.LANCZOS)
 
-    # Centre the product bbox on canvas
-    prod_cx = int((pl + pw / 2) * scale)
-    prod_cy = int((pt + ph / 2) * scale)
-
-    px = TW // 2 - prod_cx
-    py = TH // 2 - prod_cy
-
-    # Clamp so scaled image stays fully within canvas (no cropping ever)
-    px = max(0, min(TW - nw, px))
-    py = max(0, min(TH - nh, py))
+    # Centre on canvas
+    px = (TW - nw) // 2
+    py = (TH - nh) // 2
 
     sa = np.array(scaled, dtype=np.uint8)   # nh × nw × 3
 
