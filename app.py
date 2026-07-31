@@ -46,7 +46,7 @@ for k, v in {
     "logged_in": False, "user_name": "",
     "processing": False, "results": None,
     "preview_history": [], "preview_idx": 0,
-    "zip_bytes": None,
+    "zip_bytes": None, "out_dir": None,
 }.items():
     if k not in st.session_state:
         st.session_state[k] = v
@@ -179,6 +179,7 @@ if run_btn and uploaded_excel and not st.session_state.processing:
     run_id  = _hl.md5(uploaded_excel.getvalue()).hexdigest()[:8]
     out_dir = str(Path(tempfile.gettempdir()) / f"psydox_{run_id}")
     Path(out_dir).mkdir(parents=True, exist_ok=True)
+    st.session_state.out_dir = out_dir
 
     cfg = dict(
         INPUT_EXCEL     = excel_path,
@@ -260,6 +261,15 @@ if st.session_state.results:
             mime      = "application/zip",
             use_container_width=True,
         )
+        # Auto cleanup — free memory after download button is shown
+        import gc, shutil
+        try:
+            if "out_dir" in st.session_state and st.session_state.out_dir:
+                shutil.rmtree(st.session_state.out_dir, ignore_errors=True)
+                st.session_state.out_dir = None
+        except Exception:
+            pass
+        gc.collect()
     st.markdown("---")
 
 # ── Before / After Preview ────────────────────────────────────────────────────
