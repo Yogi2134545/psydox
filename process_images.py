@@ -677,7 +677,7 @@ def build_pack_image(pil_images: list, cfg: dict) -> Image.Image:
 #  8.  ORCHESTRATOR (parallel workers — download + process simultaneously)
 # ══════════════════════════════════════════════════════════════════════════════
 import os as _os
-_WORKERS = max(4, min(16, (_os.cpu_count() or 4) * 2))   # 4–16 parallel threads
+_WORKERS = 1   # single thread — safe for low-memory cloud environments
 
 def _process_one(args):
     """Process a single image: download/copy → convert → ratio-guard → save.
@@ -727,15 +727,17 @@ def _process_one(args):
     out_path = unique_filename(folder, raw.stem + ".jpg")
     _safe_unlink(raw)
 
-    # Post before/after preview (non-blocking — GUI will pick it up)
+    # Post before/after preview — resize to small thumbnails to save memory
     try:
         tw, th = cfg["TARGET_W"], cfg["TARGET_H"]
         before_score = compute_quality_score(img_copy, tw, th)
         after_score  = compute_quality_score(processed, tw, th)
-        # detect source format
         src_fmt = (Path(source).suffix.lstrip(".").upper()
                    if not source.startswith("http") else "URL")
-        _preview_queue.put_nowait((img_copy.copy(), processed.copy(),
+        # Thumbnail at max 400px wide to keep memory low
+        thumb_before = img_copy.copy(); thumb_before.thumbnail((400, 600))
+        thumb_after  = processed.copy(); thumb_after.thumbnail((400, 600))
+        _preview_queue.put_nowait((thumb_before, thumb_after,
                                    before_score, after_score, src_fmt))
     except Exception:
         pass
