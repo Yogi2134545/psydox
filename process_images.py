@@ -509,25 +509,15 @@ def convert_to_4_5(img: Image.Image, cfg: dict) -> Image.Image:
     if not auto_mode:
         img = replace_mixed_background(img, cfg)
 
-    solid, src_bg = is_solid_background(img)
-    # Auto: always use the product's own detected background
-    # Manual: use whatever colour the user picked
-    fill_colour = src_bg if (auto_mode or solid) else _bg_from_cfg(cfg, src_bg)
-
     orig_w, orig_h = img.size
 
-    bbox = get_product_bbox(img, cfg["USE_REMBG"])
-    pl, pt, pr, pb = bbox
-    pw, ph = pr - pl, pb - pt
-    bbox_coverage = (pw * ph) / max(orig_w * orig_h, 1)
+    MARGIN = 0.04  # breathing room on every edge
 
-    MARGIN = 0.04   # small breathing room on every edge
-
-    # Scale full original image to fit inside canvas with margin — never crop
+    # Fit the full image inside canvas — never crop any edge
     scale = min(
         TW * (1 - 2 * MARGIN) / orig_w,
         TH * (1 - 2 * MARGIN) / orig_h,
-        2.0  # don't upscale more than 2×
+        2.0
     )
 
     nw = max(1, int(orig_w * scale))

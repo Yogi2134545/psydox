@@ -229,8 +229,6 @@ if run_btn and uploaded_excel and not st.session_state.processing:
     out_files = [f for f in Path(out_dir).rglob("*")
                  if f.is_file() and f.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")]
 
-    st.write(f"DEBUG: found {len(out_files)} output files in {out_dir}")  # temp debug line
-
     if out_files:
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
