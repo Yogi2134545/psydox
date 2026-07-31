@@ -48,7 +48,14 @@ import requests
 import numpy as np
 import pandas as pd
 from PIL import Image, ImageFilter
-import cv2
+
+# ─── optional cv2 ──────────────────────────────────────────────────────────
+_cv2_available = False
+try:
+    import cv2
+    _cv2_available = True
+except ImportError:
+    pass
 
 # ─── optional rembg ────────────────────────────────────────────────────────
 _rembg_available = False
@@ -244,8 +251,13 @@ def _bbox_rembg(img: Image.Image) -> tuple:
         return _bbox_opencv(img)
 
 def _bbox_opencv(img: Image.Image) -> tuple:
-    lab = cv2.cvtColor(np.array(img.convert("RGB")), cv2.COLOR_RGB2LAB).astype(np.float32)
-    h, w = lab.shape[:2]
+    if not _cv2_available:
+        # cv2 not available — return full image as bbox
+        w, h = img.size
+        return (0, 0, w, h)
+    arr = np.array(img.convert("RGB"))
+    h, w = arr.shape[:2]
+    lab = cv2.cvtColor(arr, cv2.COLOR_RGB2LAB).astype(np.float32)
     b = max(5, min(20, h // 30, w // 30))
 
     strips = np.concatenate([
@@ -340,6 +352,9 @@ def replace_mixed_background(img: Image.Image, cfg: dict) -> Image.Image:
 
     bg_val = cfg.get("BG_GREY", DEFAULT_BG_GREY)
     bg_rgb = (bg_val, bg_val, bg_val)
+
+    if not _cv2_available:
+        return img  # skip background replacement if cv2 not available
 
     arr = np.array(img.convert("RGB"))
     h, w = arr.shape[:2]
