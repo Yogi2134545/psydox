@@ -1,3 +1,12 @@
+ankit@popclub.co:
+  name: Ankit
+  password_hash: $2b$12$qQkqVMI26e3/sWCNhvzTfesJUxCDJC1cYv9q5g5XoB6TRqv0CJZT2
+bhargavi.kt@popclub.co:
+  name: Bhargavi
+  password_hash: $2b$12$1rUjU5V.DwT1h3NPgRHG/ejPZMygRSnGiAoPsEPzuiWthV.Nz7BTy
+devesh@popclub.co:
+  name: Devesh
+  password_hash: $2b$12$sSylQNXMOaFTtP8dHxP71.2U6S3Jpxgi4phHfly224SN6n0Am.Ec2
 yogeshwar@popclub.co:
   name: Yogeshwar
-  password_hash: $2b$12$oymEFxwSQQ3h9cuCKbJBzuKXZX5aMUtkacL6ASk0bCwJ99alV3frK
+  password_hash: $2b$12$QyYBId90ba9OwJR4zHsnjOJuagWqnBpOJ.0FWKZVyVpWLxjQxB.vm
