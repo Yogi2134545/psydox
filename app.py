@@ -60,19 +60,26 @@ for k, v in {
     if k not in st.session_state:
         st.session_state[k] = v
 
-# ── Recover ZIP from URL param after session expiry ───────────────────────────
-_recover_id = st.query_params.get("zip", None)
-if _recover_id and st.session_state.job_id is None:
-    _candidate = Path(tempfile.gettempdir()) / f"psydox_{_recover_id}" / "_psydox_output.zip"
-    if _candidate.exists():
-        # Re-register a finished job so the download button appears
-        if _recover_id not in _JOBS:
-            _JOBS[_recover_id] = {
-                "done": 0, "total": 0, "running": False,
-                "results": {"total": 0, "success": 0, "failed": 0, "skipped": 0},
-                "error": None, "zip_path": str(_candidate), "previews": [],
-            }
-        st.session_state.job_id = _recover_id
+# ── Recover job from URL params after session expiry / WebSocket reconnect ────
+_url_job = st.query_params.get("job", None)
+_url_zip = st.query_params.get("zip", None)
+
+if st.session_state.job_id is None:
+    # 1. Recover running or recently finished job via ?job=
+    if _url_job and _url_job in _JOBS:
+        st.session_state.job_id = _url_job
+
+    # 2. Recover completed ZIP via ?zip=
+    elif _url_zip:
+        _candidate = Path(tempfile.gettempdir()) / f"psydox_{_url_zip}" / "_psydox_output.zip"
+        if _candidate.exists():
+            if _url_zip not in _JOBS:
+                _JOBS[_url_zip] = {
+                    "done": 0, "total": 0, "running": False,
+                    "results": {"total": 0, "success": 0, "failed": 0, "skipped": 0},
+                    "error": None, "zip_path": str(_candidate), "previews": [],
+                }
+            st.session_state.job_id = _url_zip
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -272,6 +279,7 @@ if run_btn and uploaded_excel and not is_running:
     st.session_state.preview_idx = 0
 
     threading.Thread(target=_bg_worker, args=(job_id, cfg, out_dir), daemon=True).start()
+    st.query_params["job"] = job_id   # survive WebSocket reconnect / session reset
     st.rerun()
 
 
@@ -299,10 +307,14 @@ if job.get("error"):
     st.error("Processing error — check your Excel file and image URLs")
     st.code(job["error"])
 
-# Set URL param for ZIP recovery
-if job.get("zip_path") and not job.get("running"):
-    if st.query_params.get("zip") != job_id:
+# Update URL params: switch from ?job= (running) to ?zip= (done)
+if job_id and not job.get("running"):
+    if job.get("zip_path") and st.query_params.get("zip") != job_id:
         st.query_params["zip"] = job_id
+        st.query_params.pop("job", None)
+elif job_id and job.get("running"):
+    if st.query_params.get("job") != job_id:
+        st.query_params["job"] = job_id
 
 if job.get("results"):
     res = job["results"]
