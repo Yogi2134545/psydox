@@ -276,15 +276,19 @@ job    = _read_job(job_id) if job_id else {}
 
 @st.fragment(run_every=2)
 def _poll():
-    j = _read_job(st.session_state.job_id) if st.session_state.job_id else {}
+    jid = st.session_state.job_id
+    if not jid:
+        return
+    j = _read_job(jid)
     if j.get("running"):
         done  = j.get("done",  0)
         total = j.get("total", 0)
         pct   = done / total if total > 0 else 0
         st.progress(pct, text=f"⏳  {done} / {total} images — {int(pct*100)}%")
         st.info("Processing… updates every 2 s")
-    elif j.get("results") or j.get("error"):
-        # Job just finished — do one full rerun to show download button / error
+    elif (j.get("results") or j.get("error")) and not j.get("_shown"):
+        # Job just finished — trigger ONE full rerun to show results, then stop
+        j["_shown"] = True
         st.rerun(scope="app")
 
 _poll()
