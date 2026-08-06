@@ -57,10 +57,14 @@ def _read_status(job_id: str) -> dict:
     return {}
 
 def _write_status(job_id: str, data: dict):
-    """Write status to both memory and disk."""
-    _JOBS[job_id] = data
+    """Write status to both memory and disk — updates in-place to preserve references."""
+    if job_id in _JOBS:
+        _JOBS[job_id].update(data)   # in-place: background thread reference stays valid
+    else:
+        _JOBS[job_id] = dict(data)
     try:
-        _status_path(job_id).write_text(json.dumps(data))
+        safe = {k: v for k, v in _JOBS[job_id].items() if k != "previews"}
+        _status_path(job_id).write_text(json.dumps(safe))
     except Exception:
         pass
 
@@ -155,31 +159,34 @@ if not st.session_state.logged_in:
 #  BACKGROUND WORKER
 # ═════════════════════════════════════════════════════════════════════════════
 def _bg_worker(job_id: str, cfg: dict, out_dir: str):
-    """Background thread — writes progress to disk + memory, never touches session_state."""
-    status = _JOBS[job_id]   # already initialised before thread start
+    """Background thread — always writes via _JOBS[job_id] directly (never a stale local ref)."""
     stop_ev = threading.Event()
-    previews_list = []
 
     try:
         def _cb(done, total):
-            status["done"]  = done
-            status["total"] = total
+            # Write directly to _JOBS[job_id] — always the current object
+            _JOBS[job_id]["done"]  = done
+            _JOBS[job_id]["total"] = total
             # Drain preview queue
             try:
                 while True:
-                    previews_list.append(_preview_queue.get_nowait())
+                    _JOBS[job_id]["previews"].append(_preview_queue.get_nowait())
             except Exception:
                 pass
-            # Write progress to disk every 10 images so a fresh process can recover
+            # Write to disk every 10 images so a fresh process can recover
             if done % 10 == 0:
-                _write_status(job_id, {k: v for k, v in status.items() if k != "previews"})
+                try:
+                    safe = {k: v for k, v in _JOBS[job_id].items() if k != "previews"}
+                    _status_path(job_id).write_text(json.dumps(safe))
+                except Exception:
+                    pass
 
         res = process_all(cfg, progress_cb=_cb, stop_event=stop_ev)
 
         # Drain remaining previews
         try:
             while True:
-                previews_list.append(_preview_queue.get_nowait())
+                _JOBS[job_id]["previews"].append(_preview_queue.get_nowait())
         except Exception:
             pass
 
@@ -194,17 +201,16 @@ def _bg_worker(job_id: str, cfg: dict, out_dir: str):
                     zf.write(f, f.relative_to(out_dir))
             zip_path_str = str(zip_path)
 
-        status["zip_path"] = zip_path_str
-        status["results"]  = res
-        status["previews"] = previews_list   # kept only in memory
+        _JOBS[job_id]["zip_path"] = zip_path_str
+        _JOBS[job_id]["results"]  = res
 
     except Exception:
         import traceback
-        status["error"] = traceback.format_exc()
+        _JOBS[job_id]["error"] = traceback.format_exc()
     finally:
-        status["running"] = False
-        # Final disk write so recovery works after process restart
-        _write_status(job_id, {k: v for k, v in status.items() if k != "previews"})
+        _JOBS[job_id]["running"] = False
+        # Final disk write for recovery after process restart
+        _write_status(job_id, {})
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -343,18 +349,16 @@ def _progress_fragment():
     if not job_id:
         return
     status = _read_status(job_id)
-    if not status.get("running"):
-        return
 
-    done  = status.get("done",  0)
-    total = status.get("total", 0)
-    pct   = done / total if total > 0 else 0
-    label = f"⏳  Processing  {done} / {total}  images…  ({int(pct*100)}%)"
-    st.progress(pct, text=label)
-    st.info("Running in background — updates every 2 seconds.")
-
-    # When job finishes, trigger full page rerun to show results
-    if not status.get("running") and (status.get("results") or status.get("error")):
+    if status.get("running"):
+        done  = status.get("done",  0)
+        total = status.get("total", 0)
+        pct   = done / total if total > 0 else 0
+        label = f"⏳  Processing  {done} / {total}  images…  ({int(pct*100)}%)"
+        st.progress(pct, text=label)
+        st.info("Running in background — updates every 2 seconds.")
+    elif status.get("results") or status.get("error"):
+        # Job just finished — trigger full page rerun to show results/download
         st.rerun(scope="app")
 
 _progress_fragment()
