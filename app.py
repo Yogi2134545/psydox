@@ -104,7 +104,13 @@ if st.session_state.job_id is None:
     # Recover via ?job= — works even after process restart (reads disk)
     if _url_job:
         status = _read_status(_url_job)
-        if status:   # job dir exists on disk
+        if status:
+            # If NOT in _JOBS (new process) but disk says running → thread is dead.
+            # Mark stale so user can start fresh instead of waiting forever.
+            if _url_job not in _JOBS and status.get("running"):
+                status["running"] = False
+                status["error"]   = "STALE_JOB"
+                _write_status(_url_job, status)
             st.session_state.job_id = _url_job
 
     # Recover completed ZIP via ?zip=
@@ -382,8 +388,21 @@ elif job_id and status.get("running"):
     st.query_params["job"] = job_id
 
 if status.get("error"):
-    st.error("Processing error — check your Excel file and image URLs")
-    st.code(status["error"])
+    if status["error"] == "STALE_JOB":
+        st.warning("⚠️  The server restarted and the previous job was lost. Please upload your file and click RUN again.")
+        if st.button("🔄  Reset & Start Fresh", type="primary"):
+            st.session_state.job_id    = None
+            st.session_state.zip_bytes = None
+            st.query_params.clear()
+            st.rerun()
+    else:
+        st.error("Processing error — check your Excel file and image URLs")
+        st.code(status["error"])
+        if st.button("🔄  Reset", key="reset_err"):
+            st.session_state.job_id    = None
+            st.session_state.zip_bytes = None
+            st.query_params.clear()
+            st.rerun()
 
 if status.get("results"):
     res = status["results"]
