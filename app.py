@@ -51,6 +51,17 @@ for k, v in {
     if k not in st.session_state:
         st.session_state[k] = v
 
+# ── Recover ZIP from disk after session expiry (URL param ?zip=<run_id>) ──────
+import hashlib as _hl
+_qp = st.query_params
+_recover_id = _qp.get("zip", None)
+if _recover_id and not st.session_state.zip_path:
+    import tempfile as _tmp
+    _candidate = Path(_tmp.gettempdir()) / f"psydox_{_recover_id}" / "_psydox_output.zip"
+    if _candidate.exists():
+        st.session_state.zip_path = str(_candidate)
+        st.session_state.out_dir  = str(_candidate.parent)
+
 # ═════════════════════════════════════════════════════════════════════════════
 #  LOGIN PAGE
 # ═════════════════════════════════════════════════════════════════════════════
@@ -238,6 +249,8 @@ if run_btn and uploaded_excel and not st.session_state.processing:
                 zf.write(f, f.relative_to(out_dir))
         st.session_state.zip_path = str(zip_path)
         st.session_state.zip_bytes = None  # will be loaded from disk on demand
+        # Save run_id in URL so ZIP survives session expiry + page refresh
+        st.query_params["zip"] = run_id
     else:
         st.session_state.zip_path = None
         st.warning("No output images found. Check that your Excel URLs are publicly accessible.")
@@ -255,33 +268,38 @@ if st.session_state.results:
     c3.metric("✗ Failed",    res.get("failed",  0))
     c4.metric("⚠ Skipped",   res.get("skipped", 0))
 
-    # Load ZIP from disk into memory (only once; keep across reruns)
+    # Load ZIP from disk into memory (once; survives session expiry via URL ?zip=)
+    import gc, shutil
     zip_path = st.session_state.get("zip_path")
     if zip_path and Path(zip_path).exists() and not st.session_state.zip_bytes:
+        zip_size_mb = Path(zip_path).stat().st_size / 1024 / 1024
+        if zip_size_mb > 800:
+            st.warning(f"ZIP is {zip_size_mb:.0f} MB — loading may take a moment…")
         try:
             with open(zip_path, "rb") as _zf:
                 st.session_state.zip_bytes = _zf.read()
         except Exception as _ze:
-            st.error(f"Could not read ZIP file: {_ze}")
+            st.error(f"Could not read ZIP: {_ze}. Try refreshing the page.")
 
     if st.session_state.zip_bytes:
-        import gc, shutil
         zip_size_mb = len(st.session_state.zip_bytes) / 1024 / 1024
+        st.success(f"✅ Processing complete — ZIP ready ({zip_size_mb:.1f} MB). Click below to download.")
         clicked = st.download_button(
             f"⬇  Download All Processed Images  (.zip)  —  {zip_size_mb:.1f} MB",
             data      = st.session_state.zip_bytes,
             file_name = "psydox_processed.zip",
             mime      = "application/zip",
             use_container_width=True,
+            key       = "download_zip",
         )
-        # Cleanup only after download is triggered
         if clicked:
             try:
                 if st.session_state.out_dir:
                     shutil.rmtree(st.session_state.out_dir, ignore_errors=True)
-                    st.session_state.out_dir = None
+                    st.session_state.out_dir  = None
                 st.session_state.zip_bytes = None
                 st.session_state.zip_path  = None
+                st.query_params.clear()
             except Exception:
                 pass
             gc.collect()

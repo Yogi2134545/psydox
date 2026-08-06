@@ -7,5 +7,9 @@ textColor       = "#ffffff"
 font            = "sans serif"
 
 [server]
-maxUploadSize   = 200
-headless        = true
+maxUploadSize              = 2000
+headless                   = true
+enableWebsocketCompression = false
+maxMessageSize             = 2000
+enableCORS                 = false
+enableXsrfProtection       = false
