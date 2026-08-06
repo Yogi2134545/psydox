@@ -714,7 +714,7 @@ def build_pack_image(pil_images: list, cfg: dict) -> Image.Image:
 #  8.  ORCHESTRATOR (parallel workers — download + process simultaneously)
 # ══════════════════════════════════════════════════════════════════════════════
 import os as _os
-_WORKERS = 2   # 2 threads — good balance of speed and memory on Railway 8GB
+_WORKERS = 6   # 6 parallel downloads — Railway 8GB can handle this easily
 
 def _process_one(args):
     """Process a single image: download → convert → force exact size → save.
