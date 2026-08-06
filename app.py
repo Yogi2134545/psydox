@@ -133,7 +133,7 @@ with st.sidebar:
     jpeg_quality = st.slider("JPEG Quality", 50, 95, int(DEFAULT_JPEG_QUALITY))
 
     st.markdown("## 🌐 Network")
-    max_retries = st.number_input("Max Retries", 1, 10, int(DEFAULT_MAX_RETRIES))
+    max_retries = st.number_input("Max Retries", 1, 10, 5)
     req_timeout = st.number_input("Timeout (s)", 5, 120, int(DEFAULT_REQUEST_TIMEOUT))
 
     st.markdown("## 🎨 Background Color")

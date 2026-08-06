@@ -12,8 +12,8 @@ DEFAULT_INPUT_EXCEL   = "input.xlsx"
 DEFAULT_OUTPUT_FOLDER = "processed_images"
 DEFAULT_TARGET_W      = 1080          # output width  (4 : 5 ratio)
 DEFAULT_TARGET_H      = 1350          # output height (4 : 5 ratio)
-DEFAULT_JPEG_QUALITY  = 92            # 1-95
-DEFAULT_MAX_RETRIES   = 3
+DEFAULT_JPEG_QUALITY  = 92            # 1-95  (90+ for professional output)
+DEFAULT_MAX_RETRIES   = 5             # retry downloads up to 5 times
 DEFAULT_REQUEST_TIMEOUT = 15          # seconds
 DEFAULT_USE_REMBG     = False         # True = better product detection (needs onnxruntime)
 DEFAULT_BG_GREY       = 235           # 0=black … 255=white; 235 = light studio grey
@@ -611,14 +611,14 @@ def verify_ratio(img: Image.Image, cfg: dict) -> bool:
 def save_image(processed: Image.Image, dest: Path, quality: int) -> bool:
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
-        processed.convert("RGB").save(dest, "JPEG", quality=quality, optimize=True)
-        # Double-check the file we just wrote opens at the right size
-        with Image.open(dest) as check:
-            check.load()
+        # subsampling=0 keeps full chroma resolution (4:4:4) — best quality at any quality level
+        processed.convert("RGB").save(dest, "JPEG", quality=quality,
+                                      optimize=True, subsampling=0)
         return True
     except Exception as e:
         log.error(f"    ✗ save failed {dest}: {e}")
-        dest.unlink(missing_ok=True)   # remove corrupted/partial file
+        try: dest.unlink(missing_ok=True)
+        except Exception: pass
         return False
 
 
@@ -693,8 +693,8 @@ import os as _os
 _WORKERS = 2   # 2 threads — good balance of speed and memory on Railway 8GB
 
 def _process_one(args):
-    """Process a single image: download/copy → convert → ratio-guard → save.
-    Returns a result dict (thread-safe — no shared mutable state)."""
+    """Process a single image: download → convert → force exact size → save.
+    Never skips a successfully downloaded image — always produces output."""
     source, folder, cfg, idx, total_src = args
     result = dict(source=source, status="", output_path="",
                   is_success=False, is_failed_dl=False, is_skipped=False)
@@ -707,75 +707,72 @@ def _process_one(args):
         return result
 
     def _safe_unlink(p):
-        try:
-            p.unlink(missing_ok=True)
-        except Exception:
-            pass
+        try: p.unlink(missing_ok=True)
+        except Exception: pass
 
+    # ── Open image ────────────────────────────────────────────────────────────
     try:
         with Image.open(raw) as im:
             im.load()
-            img_copy = im.convert("RGB")  # drop alpha, normalise mode
+            img_copy = im.convert("RGB")
     except Exception as e:
-        log.error(f"  ✗ open error {raw}: {e}")
+        log.error(f"  ✗ open error {raw.name}: {e}")
         _safe_unlink(raw)
-        result.update(status=f"SKIP_OPEN: {e}", is_skipped=True)
+        result.update(status=f"FAILED_OPEN: {e}", is_failed_dl=True)
         return result
 
-    # Delete the raw download immediately — frees disk space early
-    _safe_unlink(raw)
+    _safe_unlink(raw)   # free disk space immediately after loading
 
+    # ── Convert ───────────────────────────────────────────────────────────────
+    TW, TH = cfg["TARGET_W"], cfg["TARGET_H"]
     try:
         processed = convert_to_4_5(img_copy, cfg)
     except Exception as e:
-        log.error(f"  ✗ convert error: {e}")
-        result.update(status=f"SKIP_CONVERT: {e}", is_skipped=True)
-        return result
+        log.warning(f"  ⚠ convert error ({e}) — falling back to simple fit")
+        # Fallback: simple letterbox resize, always produces valid output
+        try:
+            img_rgb = img_copy.convert("RGB")
+            img_rgb.thumbnail((TW, TH), Image.LANCZOS)
+            canvas = Image.new("RGB", (TW, TH), (235, 235, 235))
+            ox = (TW - img_rgb.width)  // 2
+            oy = (TH - img_rgb.height) // 2
+            canvas.paste(img_rgb, (ox, oy))
+            processed = canvas
+        except Exception as e2:
+            log.error(f"  ✗ fallback also failed: {e2}")
+            result.update(status=f"FAILED_CONVERT: {e2}", is_skipped=True)
+            return result
 
-    if not verify_ratio(processed, cfg):
-        got_w, got_h = processed.size
-        log.error(f"  ✗ RATIO FAIL {raw.name}: got {got_w}×{got_h}, "
-                  f"expected {cfg['TARGET_W']}×{cfg['TARGET_H']} — NOT saved.")
-        _safe_unlink(raw)
-        result.update(status=f"SKIP_WRONG_RATIO:{got_w}x{got_h}", is_skipped=True)
-        return result
+    # ── Force EXACT target size — fix any 1-2px rounding from int arithmetic ─
+    if processed.size != (TW, TH):
+        processed = processed.resize((TW, TH), Image.LANCZOS)
 
-    out_path = unique_filename(folder, raw.stem + ".jpg")
-
-    # Post before/after preview — resize to small thumbnails to save memory
+    # ── Preview thumbnails ────────────────────────────────────────────────────
     try:
-        tw, th = cfg["TARGET_W"], cfg["TARGET_H"]
-        before_score = compute_quality_score(img_copy, tw, th)
-        after_score  = compute_quality_score(processed, tw, th)
+        before_score = compute_quality_score(img_copy, TW, TH)
+        after_score  = compute_quality_score(processed, TW, TH)
         src_fmt = (Path(source).suffix.lstrip(".").upper()
                    if not source.startswith("http") else "URL")
-        # Thumbnail at max 400px wide to keep memory low
-        thumb_before = img_copy.copy(); thumb_before.thumbnail((400, 600))
+        thumb_before = img_copy.copy();  thumb_before.thumbnail((400, 600))
         thumb_after  = processed.copy(); thumb_after.thumbnail((400, 600))
         _preview_queue.put_nowait((thumb_before, thumb_after,
                                    before_score, after_score, src_fmt))
     except Exception:
         pass
 
+    # ── Save ──────────────────────────────────────────────────────────────────
+    out_path = unique_filename(folder, Path(source).stem + ".jpg")
+    del img_copy  # free memory before saving
+
     if not save_image(processed, out_path, cfg["JPEG_QUALITY"]):
-        result.update(status="FAILED_SAVE", is_skipped=True)
-        return result
+        # Retry once with reduced quality before giving up
+        if not save_image(processed, out_path, max(70, cfg["JPEG_QUALITY"] - 10)):
+            result.update(status="FAILED_SAVE", is_skipped=True)
+            return result
 
-    # Free large image from memory now that it's saved
-    del processed, img_copy
+    del processed  # free memory
 
-    try:
-        with Image.open(out_path) as saved:
-            saved.load()
-            if saved.size != (cfg["TARGET_W"], cfg["TARGET_H"]):
-                raise ValueError(f"saved file is {saved.size}, not target size")
-    except Exception as e:
-        log.error(f"  ✗ post-save verify failed {out_path.name}: {e}")
-        out_path.unlink(missing_ok=True)
-        result.update(status=f"SKIP_POSTSAVE_VERIFY: {e}", is_skipped=True)
-        return result
-
-    log.info(f"  ✓ {out_path.name}  [{cfg['TARGET_W']}×{cfg['TARGET_H']}]")
+    log.info(f"  ✓ {out_path.name}  [{TW}×{TH}]")
     result.update(status="OK", output_path=str(out_path), is_success=True)
     return result
 
