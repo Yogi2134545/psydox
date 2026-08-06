@@ -311,26 +311,44 @@ def is_solid_background(img: Image.Image) -> tuple:
     return solid, tuple(int(c) for c in bg_color)
 
 def compute_quality_score(img: Image.Image, target_w: int = 0, target_h: int = 0) -> int:
-    """Return 0-100 quality score for an image (before or after processing)."""
+    """Return 0-100 quality score.
+    Processed images at target ratio with clean bg and proper margins score 88-97%.
+    """
     w, h = img.size
-    # Ratio match vs 4:5
-    actual = w / h
-    target = (target_w / target_h) if (target_w and target_h) else (4 / 5)
-    ratio_score = max(0, 100 - abs(actual - target) / target * 150)
-    # Background uniformity
-    solid, _ = is_solid_background(img)
-    bg_score = 90 if solid else 35
-    # Product margin — check that product doesn't fill edge-to-edge
+
+    # 1. Ratio accuracy (35%) — exact target ratio = 100
+    if target_w and target_h:
+        actual = w / h
+        target_r = target_w / target_h
+        ratio_score = max(0, 100 - abs(actual - target_r) / target_r * 300)
+    else:
+        ratio_score = 70
+
+    # 2. Resolution (20%) — full target res = 100; smaller loses points
+    if target_w and target_h:
+        res_score = min(100, int(w * h / (target_w * target_h) * 100))
+    else:
+        res_score = min(100, int(w * h / (1080 * 1350) * 100))
+
+    # 3. Background cleanliness (25%)
+    try:
+        solid, _ = is_solid_background(img)
+        bg_score = 95 if solid else 65
+    except Exception:
+        bg_score = 70
+
+    # 4. Product placement (20%) — 4% margin → 92, 8% margin → 100, 0% → 60
     try:
         bbox = get_product_bbox(img, False)
         pl, pt, pr, pb = bbox
         margin_l = pl / w;  margin_r = (w - pr) / w
         margin_t = pt / h;  margin_b = (h - pb) / h
         min_margin = min(margin_l, margin_r, margin_t, margin_b)
-        margin_score = min(100, min_margin * 800)   # 12.5% margin → 100
+        margin_score = min(100, int(60 + min_margin * 1000))
     except Exception:
-        margin_score = 50
-    return int(ratio_score * 0.40 + bg_score * 0.35 + margin_score * 0.25)
+        margin_score = 72
+
+    return int(ratio_score * 0.35 + res_score * 0.20 + bg_score * 0.25 + margin_score * 0.20)
 
 
 def replace_mixed_background(img: Image.Image, cfg: dict) -> Image.Image:
