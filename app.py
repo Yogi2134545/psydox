@@ -15,8 +15,12 @@ from process_images import (
     DEFAULT_BG_GREY, _preview_queue,
 )
 
-# ── Module-level job registry (memory) ───────────────────────────────────────
-_JOBS: dict = {}   # job_id → status dict
+# ── Job registry — @st.cache_resource persists across reruns (unlike plain globals) ──
+@st.cache_resource
+def _get_jobs() -> dict:
+    return {}
+
+_JOBS = _get_jobs()   # same dict object every run — never wiped by st.rerun()
 
 def _job_dir(jid):  return Path(tempfile.gettempdir()) / f"psydox_{jid}"
 def _status_file(jid): return _job_dir(jid) / "status.json"
