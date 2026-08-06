@@ -2,7 +2,7 @@
 Psydox — Streamlit Web App
 """
 import streamlit as st
-import yaml, bcrypt, zipfile, io, tempfile, threading, time, gc, shutil, hashlib
+import yaml, bcrypt, zipfile, json, tempfile, threading, gc, shutil, hashlib, time
 from pathlib import Path
 from math import gcd
 
@@ -23,14 +23,46 @@ from process_images import (
     DEFAULT_BG_GREY, _preview_queue, compute_quality_score,
 )
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  MODULE-LEVEL JOB REGISTRY  — survives st.rerun(), visible to all threads
-#  Keyed by job_id (md5 of excel bytes).
-#  Structure: { job_id: { "done":0, "total":0, "running":True,
-#                         "results":None, "error":None,
-#                         "zip_path":None, "previews":[] } }
-# ═══════════════════════════════════════════════════════════════════════════════
-_JOBS: dict = {}
+# ─────────────────────────────────────────────────────────────────────────────
+#  JOB STATE  (disk-based → survives process restarts + session resets)
+#
+#  All state lives in  {tmpdir}/psydox_{job_id}/
+#    status.json  — {"running": bool, "done": int, "total": int,
+#                    "error": str|null, "zip_path": str|null,
+#                    "results": {...}|null}
+#    previews/    — preview PNG pairs written by background thread
+#
+#  _JOBS dict is kept as a fast in-process cache (avoids disk reads every 2s).
+# ─────────────────────────────────────────────────────────────────────────────
+_JOBS: dict = {}   # in-memory cache
+
+def _job_dir(job_id: str) -> Path:
+    return Path(tempfile.gettempdir()) / f"psydox_{job_id}"
+
+def _status_path(job_id: str) -> Path:
+    return _job_dir(job_id) / "status.json"
+
+def _read_status(job_id: str) -> dict:
+    """Read job status — in-memory cache first, disk fallback."""
+    if job_id in _JOBS:
+        return _JOBS[job_id]
+    sp = _status_path(job_id)
+    if sp.exists():
+        try:
+            data = json.loads(sp.read_text())
+            _JOBS[job_id] = data   # warm cache
+            return data
+        except Exception:
+            pass
+    return {}
+
+def _write_status(job_id: str, data: dict):
+    """Write status to both memory and disk."""
+    _JOBS[job_id] = data
+    try:
+        _status_path(job_id).write_text(json.dumps(data))
+    except Exception:
+        pass
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -60,25 +92,29 @@ for k, v in {
     if k not in st.session_state:
         st.session_state[k] = v
 
-# ── Recover job from URL params after session expiry / WebSocket reconnect ────
+# ── Recover job from URL after session expiry / process restart ───────────────
 _url_job = st.query_params.get("job", None)
 _url_zip = st.query_params.get("zip", None)
 
 if st.session_state.job_id is None:
-    # 1. Recover running or recently finished job via ?job=
-    if _url_job and _url_job in _JOBS:
-        st.session_state.job_id = _url_job
+    # Recover via ?job= — works even after process restart (reads disk)
+    if _url_job:
+        status = _read_status(_url_job)
+        if status:   # job dir exists on disk
+            st.session_state.job_id = _url_job
 
-    # 2. Recover completed ZIP via ?zip=
+    # Recover completed ZIP via ?zip=
     elif _url_zip:
-        _candidate = Path(tempfile.gettempdir()) / f"psydox_{_url_zip}" / "_psydox_output.zip"
+        _candidate = _job_dir(_url_zip) / "_psydox_output.zip"
         if _candidate.exists():
-            if _url_zip not in _JOBS:
-                _JOBS[_url_zip] = {
-                    "done": 0, "total": 0, "running": False,
+            status = _read_status(_url_zip)
+            if not status:
+                status = {
+                    "running": False, "done": 0, "total": 0,
                     "results": {"total": 0, "success": 0, "failed": 0, "skipped": 0},
-                    "error": None, "zip_path": str(_candidate), "previews": [],
+                    "error": None, "zip_path": str(_candidate),
                 }
+                _write_status(_url_zip, status)
             st.session_state.job_id = _url_zip
 
 
@@ -116,10 +152,64 @@ if not st.session_state.logged_in:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  MAIN APP
+#  BACKGROUND WORKER
 # ═════════════════════════════════════════════════════════════════════════════
+def _bg_worker(job_id: str, cfg: dict, out_dir: str):
+    """Background thread — writes progress to disk + memory, never touches session_state."""
+    status = _JOBS[job_id]   # already initialised before thread start
+    stop_ev = threading.Event()
+    previews_list = []
 
-# ── Top bar ───────────────────────────────────────────────────────────────────
+    try:
+        def _cb(done, total):
+            status["done"]  = done
+            status["total"] = total
+            # Drain preview queue
+            try:
+                while True:
+                    previews_list.append(_preview_queue.get_nowait())
+            except Exception:
+                pass
+            # Write progress to disk every 10 images so a fresh process can recover
+            if done % 10 == 0:
+                _write_status(job_id, {k: v for k, v in status.items() if k != "previews"})
+
+        res = process_all(cfg, progress_cb=_cb, stop_event=stop_ev)
+
+        # Drain remaining previews
+        try:
+            while True:
+                previews_list.append(_preview_queue.get_nowait())
+        except Exception:
+            pass
+
+        # Build ZIP on disk
+        out_files = [f for f in Path(out_dir).rglob("*")
+                     if f.is_file() and f.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")]
+        zip_path_str = None
+        if out_files:
+            zip_path = Path(out_dir) / "_psydox_output.zip"
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
+                for f in out_files:
+                    zf.write(f, f.relative_to(out_dir))
+            zip_path_str = str(zip_path)
+
+        status["zip_path"] = zip_path_str
+        status["results"]  = res
+        status["previews"] = previews_list   # kept only in memory
+
+    except Exception:
+        import traceback
+        status["error"] = traceback.format_exc()
+    finally:
+        status["running"] = False
+        # Final disk write so recovery works after process restart
+        _write_status(job_id, {k: v for k, v in status.items() if k != "previews"})
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  MAIN APP  — top bar + sidebar
+# ═════════════════════════════════════════════════════════════════════════════
 c_logo, c_user = st.columns([7, 1])
 with c_logo:
     st.markdown("""
@@ -185,8 +275,11 @@ with st.sidebar:
                             help="Combine multiple product views into one composite")
 
     st.markdown("---")
-    job = _JOBS.get(st.session_state.job_id, {})
-    is_running = job.get("running", False)
+
+    # Read current job status for sidebar controls
+    _sidebar_job = _read_status(st.session_state.job_id) if st.session_state.job_id else {}
+    is_running   = _sidebar_job.get("running", False)
+
     run_btn = st.button("▶  RUN",
                         use_container_width=True,
                         type="primary",
@@ -194,67 +287,21 @@ with st.sidebar:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  BACKGROUND WORKER
-# ═════════════════════════════════════════════════════════════════════════════
-def _bg_worker(job_id: str, cfg: dict, out_dir: str):
-    """Runs in background thread. Writes ONLY to _JOBS[job_id] — never session_state."""
-    job = _JOBS[job_id]
-    stop_ev = threading.Event()
-    try:
-        def _cb(done, total):
-            job["done"]  = done
-            job["total"] = total
-            # Drain preview queue into job
-            try:
-                while True:
-                    job["previews"].append(_preview_queue.get_nowait())
-            except Exception:
-                pass
-
-        res = process_all(cfg, progress_cb=_cb, stop_event=stop_ev)
-
-        # Drain remaining previews
-        try:
-            while True:
-                job["previews"].append(_preview_queue.get_nowait())
-        except Exception:
-            pass
-
-        # Build ZIP on disk
-        out_files = [f for f in Path(out_dir).rglob("*")
-                     if f.is_file() and f.suffix.lower() in (".jpg",".jpeg",".png",".webp")]
-        if out_files:
-            zip_path = Path(out_dir) / "_psydox_output.zip"
-            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
-                for f in out_files:
-                    zf.write(f, f.relative_to(out_dir))
-            job["zip_path"] = str(zip_path)
-
-        job["results"] = res
-
-    except Exception:
-        import traceback
-        job["error"] = traceback.format_exc()
-    finally:
-        job["running"] = False
-
-
-# ═════════════════════════════════════════════════════════════════════════════
 #  START RUN
 # ═════════════════════════════════════════════════════════════════════════════
 if run_btn and uploaded_excel and not is_running:
     excel_bytes = uploaded_excel.getvalue()
-    job_id = hashlib.md5(excel_bytes).hexdigest()[:8]
+    job_id      = hashlib.md5(excel_bytes).hexdigest()[:8]
 
-    # Save Excel to temp file for background thread
-    tmp_excel = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
-    tmp_excel.write(excel_bytes); tmp_excel.flush(); tmp_excel.close()
-
-    out_dir = str(Path(tempfile.gettempdir()) / f"psydox_{job_id}")
+    # Save Excel to a stable path (background thread needs it)
+    out_dir = str(_job_dir(job_id))
     Path(out_dir).mkdir(parents=True, exist_ok=True)
+    excel_path = str(Path(out_dir) / "input.xlsx")
+    with open(excel_path, "wb") as f:
+        f.write(excel_bytes)
 
     cfg = dict(
-        INPUT_EXCEL     = tmp_excel.name,
+        INPUT_EXCEL     = excel_path,
         OUTPUT_FOLDER   = out_dir,
         TARGET_W        = int(target_w),
         TARGET_H        = int(target_h),
@@ -267,66 +314,83 @@ if run_btn and uploaded_excel and not is_running:
         PACK_MODE       = pack_mode,
     )
 
-    # Register job BEFORE starting thread
-    _JOBS[job_id] = {
-        "done": 0, "total": 0, "running": True,
-        "results": None, "error": None,
-        "zip_path": None, "previews": [],
+    # Initialise job state (memory + disk) BEFORE starting thread
+    initial_status = {
+        "running": True, "done": 0, "total": 0,
+        "results": None, "error": None, "zip_path": None,
     }
+    _write_status(job_id, initial_status)
+    # previews live only in memory
+    _JOBS[job_id]["previews"] = []
 
-    st.session_state.job_id    = job_id
-    st.session_state.zip_bytes = None
+    st.session_state.job_id     = job_id
+    st.session_state.zip_bytes  = None
     st.session_state.preview_idx = 0
 
+    # Put job_id in URL immediately so any session reset can recover it
+    st.query_params["job"] = job_id
+
     threading.Thread(target=_bg_worker, args=(job_id, cfg, out_dir), daemon=True).start()
-    st.query_params["job"] = job_id   # survive WebSocket reconnect / session reset
     st.rerun()
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  POLL PROGRESS  (main thread is FREE — just reads _JOBS and reruns every 2s)
+#  PROGRESS FRAGMENT  — auto-refreshes every 2 s without blocking WebSocket
 # ═════════════════════════════════════════════════════════════════════════════
-job_id = st.session_state.job_id
-job    = _JOBS.get(job_id, {})
+@st.fragment(run_every=2)
+def _progress_fragment():
+    job_id = st.session_state.job_id
+    if not job_id:
+        return
+    status = _read_status(job_id)
+    if not status.get("running"):
+        return
 
-if job.get("running"):
-    done  = job.get("done",  0)
-    total = job.get("total", 0)
+    done  = status.get("done",  0)
+    total = status.get("total", 0)
     pct   = done / total if total > 0 else 0
     label = f"⏳  Processing  {done} / {total}  images…  ({int(pct*100)}%)"
     st.progress(pct, text=label)
-    st.info("Running in background — page auto-refreshes every 2 seconds.")
-    time.sleep(2)
-    st.rerun()
+    st.info("Running in background — updates every 2 seconds.")
+
+    # When job finishes, trigger full page rerun to show results
+    if not status.get("running") and (status.get("results") or status.get("error")):
+        st.rerun(scope="app")
+
+_progress_fragment()
 
 
 # ═════════════════════════════════════════════════════════════════════════════
 #  RESULTS
 # ═════════════════════════════════════════════════════════════════════════════
-if job.get("error"):
-    st.error("Processing error — check your Excel file and image URLs")
-    st.code(job["error"])
+job_id = st.session_state.job_id
+status = _read_status(job_id) if job_id else {}
 
-# Update URL params: switch from ?job= (running) to ?zip= (done)
-if job_id and not job.get("running"):
-    if job.get("zip_path") and st.query_params.get("zip") != job_id:
+# Keep URL in sync
+if job_id and not status.get("running"):
+    if status.get("zip_path"):
         st.query_params["zip"] = job_id
-        st.query_params.pop("job", None)
-elif job_id and job.get("running"):
-    if st.query_params.get("job") != job_id:
-        st.query_params["job"] = job_id
+        try:
+            del st.query_params["job"]
+        except Exception:
+            pass
+elif job_id and status.get("running"):
+    st.query_params["job"] = job_id
 
-if job.get("results"):
-    res = job["results"]
+if status.get("error"):
+    st.error("Processing error — check your Excel file and image URLs")
+    st.code(status["error"])
+
+if status.get("results"):
+    res = status["results"]
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total",       res.get("total",   0))
     c2.metric("✓ Processed", res.get("success", 0))
     c3.metric("✗ Failed",    res.get("failed",  0))
     c4.metric("⚠ Skipped",   res.get("skipped", 0))
 
-    zip_path = job.get("zip_path")
+    zip_path = status.get("zip_path")
     if zip_path and Path(zip_path).exists():
-        # Load ZIP bytes once; keep in session_state across reruns
         if not st.session_state.zip_bytes:
             zip_size_mb = Path(zip_path).stat().st_size / 1024 / 1024
             if zip_size_mb > 500:
@@ -350,17 +414,17 @@ if job.get("results"):
             )
             if clicked:
                 try:
-                    out_dir_path = Path(zip_path).parent
-                    shutil.rmtree(out_dir_path, ignore_errors=True)
+                    shutil.rmtree(str(_job_dir(job_id)), ignore_errors=True)
                     st.session_state.zip_bytes = None
-                    if job_id and job_id in _JOBS:
-                        _JOBS[job_id]["zip_path"] = None
+                    st.session_state.job_id    = None
+                    if job_id in _JOBS:
+                        del _JOBS[job_id]
                     st.query_params.clear()
                 except Exception:
                     pass
                 gc.collect()
     else:
-        if not job.get("running"):
+        if not status.get("running"):
             st.warning("No output images found. Check that your Excel URLs are publicly accessible.")
 
     st.markdown("---")
@@ -369,7 +433,9 @@ if job.get("results"):
 # ═════════════════════════════════════════════════════════════════════════════
 #  BEFORE / AFTER PREVIEW
 # ═════════════════════════════════════════════════════════════════════════════
-previews = job.get("previews", [])
+# Previews live only in memory (_JOBS), not persisted to disk
+previews = _JOBS.get(job_id, {}).get("previews", []) if job_id else []
+
 if previews:
     st.markdown("### 🖼️ Before / After Preview")
 
@@ -427,7 +493,7 @@ if previews:
         st.markdown(f"`{aw} × {ah} px` &nbsp;|&nbsp; **Ratio {aw//ag} : {ah//ag}** &nbsp;|&nbsp; `JPEG`")
 
 else:
-    if not job.get("running") and not job.get("results"):
+    if not status.get("running") and not status.get("results"):
         st.markdown("""
         <div style='text-align:center;padding:80px 0;color:#555;'>
           <div style='font-size:64px;'>⚡</div>
