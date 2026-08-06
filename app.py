@@ -3,7 +3,7 @@ Psydox — Streamlit Web App
 Wraps the process_images.py engine with a browser-based UI.
 """
 import streamlit as st
-import yaml, bcrypt, zipfile, io, tempfile, threading, time
+import yaml, bcrypt, zipfile, io, tempfile, threading, time, gc, shutil
 from pathlib import Path
 from math import gcd
 
@@ -47,6 +47,7 @@ for k, v in {
     "processing": False, "results": None,
     "preview_history": [], "preview_idx": 0,
     "zip_bytes": None, "zip_path": None, "out_dir": None,
+    "prog_done": 0, "prog_total": 0, "proc_error": None,
 }.items():
     if k not in st.session_state:
         st.session_state[k] = v
@@ -170,24 +171,26 @@ with st.sidebar:
                         type="primary",
                         disabled=(uploaded_excel is None or st.session_state.processing))
 
-# ── RUN ───────────────────────────────────────────────────────────────────────
+# ── START RUN (launches background thread — main thread stays free for WS heartbeat) ──
 if run_btn and uploaded_excel and not st.session_state.processing:
+    import hashlib as _hl
+
     st.session_state.processing      = True
     st.session_state.preview_history = []
     st.session_state.preview_idx     = 0
     st.session_state.results         = None
     st.session_state.zip_bytes       = None
     st.session_state.zip_path        = None
+    st.session_state.prog_done       = 0
+    st.session_state.prog_total      = 0
+    st.session_state.proc_error      = None
 
-    # Save Excel to a persistent temp file (delete=False keeps it alive)
+    # Persist Excel to disk so background thread can read it
     tmp_excel = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
     tmp_excel.write(uploaded_excel.getvalue())
-    tmp_excel.flush()
-    tmp_excel.close()
+    tmp_excel.flush(); tmp_excel.close()
     excel_path = tmp_excel.name
 
-    # Use a fixed temp dir name so it survives rerun
-    import hashlib as _hl
     run_id  = _hl.md5(uploaded_excel.getvalue()).hexdigest()[:8]
     out_dir = str(Path(tempfile.gettempdir()) / f"psydox_{run_id}")
     Path(out_dir).mkdir(parents=True, exist_ok=True)
@@ -207,57 +210,73 @@ if run_btn and uploaded_excel and not st.session_state.processing:
         PACK_MODE       = pack_mode,
     )
 
-    progress_bar = st.progress(0, text="Starting…")
-
-    def _progress_cb(done, total):
-        pct = int(done / total * 100) if total else 0
-        progress_bar.progress(pct, text=f"Processing {done} / {total} images…")
+    def _bg_worker(cfg, out_dir, run_id):
+        """Runs in background thread. Updates session_state directly (thread-safe for simple types)."""
+        stop_ev = threading.Event()
         try:
-            while True:
-                st.session_state.preview_history.append(_preview_queue.get_nowait())
-        except Exception:
-            pass
+            def _cb(done, total):
+                st.session_state.prog_done  = done
+                st.session_state.prog_total = total
+                # Drain preview queue
+                try:
+                    while True:
+                        st.session_state.preview_history.append(_preview_queue.get_nowait())
+                except Exception:
+                    pass
 
-    stop_ev   = threading.Event()
-    error_msg = None
-    try:
-        res = process_all(cfg, progress_cb=_progress_cb, stop_event=stop_ev)
-    except Exception as e:
-        import traceback
-        error_msg = traceback.format_exc()
-        res = None
+            res = process_all(cfg, progress_cb=_cb, stop_event=stop_ev)
 
-    if error_msg:
-        st.error("Processing error — check your Excel file and URLs")
-        st.code(error_msg)
+            # Drain any remaining previews
+            try:
+                while True:
+                    st.session_state.preview_history.append(_preview_queue.get_nowait())
+            except Exception:
+                pass
 
-    # drain remaining preview items
-    try:
-        while True:
-            st.session_state.preview_history.append(_preview_queue.get_nowait())
-    except Exception:
-        pass
+            # Build ZIP on disk
+            out_files = [f for f in Path(out_dir).rglob("*")
+                         if f.is_file() and f.suffix.lower() in (".jpg",".jpeg",".png",".webp")]
+            if out_files:
+                zip_path = Path(out_dir) / "_psydox_output.zip"
+                with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
+                    for f in out_files:
+                        zf.write(f, f.relative_to(out_dir))
+                st.session_state.zip_path = str(zip_path)
+            else:
+                st.session_state.zip_path = None
 
-    # Build ZIP on disk (not in memory — avoids OOM for large batches)
-    out_files = [f for f in Path(out_dir).rglob("*")
-                 if f.is_file() and f.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")]
+            st.session_state.results = res
 
-    if out_files:
-        zip_path = Path(out_dir) / "_psydox_output.zip"
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
-            for f in out_files:
-                zf.write(f, f.relative_to(out_dir))
-        st.session_state.zip_path = str(zip_path)
-        st.session_state.zip_bytes = None  # will be loaded from disk on demand
-        # Save run_id in URL so ZIP survives session expiry + page refresh
-        st.query_params["zip"] = run_id
-    else:
-        st.session_state.zip_path = None
-        st.warning("No output images found. Check that your Excel URLs are publicly accessible.")
+        except Exception as e:
+            import traceback
+            st.session_state.proc_error = traceback.format_exc()
+        finally:
+            st.session_state.processing = False
 
-    st.session_state.results    = res
-    st.session_state.processing = False
+    t = threading.Thread(target=_bg_worker, args=(cfg, out_dir, run_id), daemon=True)
+    t.start()
     st.rerun()
+
+# ── POLL PROGRESS while background thread is running ─────────────────────────
+if st.session_state.processing:
+    done  = st.session_state.prog_done
+    total = st.session_state.prog_total
+    pct   = int(done / total * 100) if total > 0 else 0
+    st.progress(pct / 100, text=f"⏳ Processing {done} / {total} images… ({pct}%)")
+    st.info("Processing is running in the background. This page refreshes automatically.")
+    time.sleep(2)
+    st.rerun()
+
+# ── Show processing error if any ─────────────────────────────────────────────
+if st.session_state.proc_error:
+    st.error("Processing error — check your Excel file and image URLs")
+    st.code(st.session_state.proc_error)
+
+# ── Set URL param once ZIP is ready (survives page refresh) ──────────────────
+if st.session_state.zip_path and not st.session_state.processing:
+    _zip_run_id = Path(st.session_state.zip_path).parent.name.replace("psydox_", "")
+    if st.query_params.get("zip") != _zip_run_id:
+        st.query_params["zip"] = _zip_run_id
 
 # ── Stats + Download ──────────────────────────────────────────────────────────
 if st.session_state.results:
@@ -269,7 +288,6 @@ if st.session_state.results:
     c4.metric("⚠ Skipped",   res.get("skipped", 0))
 
     # Load ZIP from disk into memory (once; survives session expiry via URL ?zip=)
-    import gc, shutil
     zip_path = st.session_state.get("zip_path")
     if zip_path and Path(zip_path).exists() and not st.session_state.zip_bytes:
         zip_size_mb = Path(zip_path).stat().st_size / 1024 / 1024
