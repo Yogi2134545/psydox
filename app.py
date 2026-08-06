@@ -1,6 +1,6 @@
 """Psydox — Nike Image Processor"""
 import streamlit as st
-import yaml, bcrypt, zipfile, json, tempfile, threading, gc, shutil, hashlib, time
+import yaml, bcrypt, zipfile, json, tempfile, threading, gc, shutil, hashlib
 from pathlib import Path
 from math import gcd
 
@@ -274,14 +274,20 @@ if run_btn and have_file and not is_run:
 job_id = st.session_state.job_id
 job    = _read_job(job_id) if job_id else {}
 
-if job.get("running"):
-    done  = job.get("done",  0)
-    total = job.get("total", 0)
-    pct   = done / total if total > 0 else 0
-    st.progress(pct, text=f"⏳  {done} / {total} images — {int(pct*100)}%")
-    st.info("Processing… page refreshes every 2 s")
-    time.sleep(2)
-    st.rerun()
+@st.fragment(run_every=2)
+def _poll():
+    j = _read_job(st.session_state.job_id) if st.session_state.job_id else {}
+    if j.get("running"):
+        done  = j.get("done",  0)
+        total = j.get("total", 0)
+        pct   = done / total if total > 0 else 0
+        st.progress(pct, text=f"⏳  {done} / {total} images — {int(pct*100)}%")
+        st.info("Processing… updates every 2 s")
+    elif j.get("results") or j.get("error"):
+        # Job just finished — do one full rerun to show download button / error
+        st.rerun(scope="app")
+
+_poll()
 
 # ═════════════════════════════════════════════════════════════════════════════
 #  RESULTS
