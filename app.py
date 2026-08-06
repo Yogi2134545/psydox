@@ -105,14 +105,7 @@ if st.session_state.job_id is None:
     if _url_job:
         status = _read_status(_url_job)
         if status:
-            # If NOT in _JOBS (new process) but disk says running → thread is dead.
-            # Mark stale so user can start fresh instead of waiting forever.
-            if _url_job not in _JOBS and status.get("running"):
-                status["running"] = False
-                status["error"]   = "STALE_JOB"
-                _write_status(_url_job, status)
             st.session_state.job_id = _url_job
-
     # Recover completed ZIP via ?zip=
     elif _url_zip:
         _candidate = _job_dir(_url_zip) / "_psydox_output.zip"
@@ -126,6 +119,22 @@ if st.session_state.job_id is None:
                 }
                 _write_status(_url_zip, status)
             st.session_state.job_id = _url_zip
+
+# ── Stale-job detection (runs for ANY job_id, not just URL-recovered ones) ────
+# If disk says "running" but job is NOT in _JOBS, the process restarted and
+# the background thread is dead — mark it immediately so UI doesn't hang.
+def _reset_job():
+    st.session_state.job_id    = None
+    st.session_state.zip_bytes = None
+    st.query_params.clear()
+
+_current_job_id = st.session_state.job_id
+if _current_job_id and _current_job_id not in _JOBS:
+    _disk_status = _read_status(_current_job_id)
+    if _disk_status.get("running"):
+        _disk_status["running"] = False
+        _disk_status["error"]   = "STALE_JOB"
+        _write_status(_current_job_id, _disk_status)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -297,6 +306,12 @@ with st.sidebar:
                         type="primary",
                         disabled=(uploaded_excel is None or is_running))
 
+    # Always-visible reset: clears stuck/stale/completed state so user can start fresh
+    if st.session_state.job_id:
+        if st.button("🔄  New Run", use_container_width=True):
+            _reset_job()
+            st.rerun()
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 #  START RUN
@@ -354,6 +369,17 @@ def _progress_fragment():
     job_id = st.session_state.job_id
     if not job_id:
         return
+
+    # Stale check: if disk says running but thread is gone, force full rerun to show Reset UI
+    if job_id not in _JOBS:
+        _disk = _read_status(job_id)
+        if _disk.get("running"):
+            _disk["running"] = False
+            _disk["error"]   = "STALE_JOB"
+            _write_status(job_id, _disk)
+        st.rerun(scope="app")
+        return
+
     status = _read_status(job_id)
 
     if status.get("running"):
