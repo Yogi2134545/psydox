@@ -159,14 +159,20 @@ def _resolve_url(url: str) -> str:
     m = re.search(r'drive\.google\.com/file/d/([A-Za-z0-9_-]+)', url)
     if m:
         return f"https://drive.google.com/uc?export=download&id={m.group(1)}"
-    # Google Drive: open?id=<ID>
     m = re.search(r'drive\.google\.com/open\?id=([A-Za-z0-9_-]+)', url)
     if m:
         return f"https://drive.google.com/uc?export=download&id={m.group(1)}"
-    # Dropbox: dl=0  →  dl=1
-    if 'dropbox.com' in url:
-        return re.sub(r'[?&]dl=0', lambda x: x.group().replace('dl=0', 'dl=1'), url) \
-               if 'dl=0' in url else url.rstrip('?') + ('&dl=1' if '?' in url else '?dl=1')
+
+    # Dropbox — both old (/s/) and new (/scl/fi/) share links
+    if 'dropbox.com' in url or 'dropboxusercontent.com' in url:
+        # Switch to dl.dropboxusercontent.com for direct raw file access
+        url = url.replace('www.dropbox.com', 'dl.dropboxusercontent.com')
+        # Remove dl=0/dl=1 param — not needed on dropboxusercontent.com
+        url = re.sub(r'[?&]dl=[01]', lambda m: '' if m.group().startswith('?') else '', url)
+        # Remove trailing ? or & left behind
+        url = url.rstrip('?').rstrip('&')
+        return url
+
     # OneDrive share links: embed → download
     if '1drv.ms' in url or 'onedrive.live.com' in url:
         return url.replace('redir?', 'download?').replace('embed?', 'download?')
@@ -193,7 +199,7 @@ def download_image(url: str, dest_folder: Path, cfg: dict) -> Path | None:
             with open(dest, "wb") as f:
                 for chunk in resp.iter_content(8192):
                     f.write(chunk)
-            log.info(f"    ✓ downloaded → {dest.name}")
+            log.debug(f"    ✓ downloaded → {dest.name}")
             return dest
         except Exception as exc:
             log.warning(f"    attempt {attempt}/{cfg['MAX_RETRIES']} failed: {exc}")
@@ -717,7 +723,7 @@ def _process_one(args):
     result = dict(source=source, status="", output_path="",
                   is_success=False, is_failed_dl=False, is_skipped=False)
 
-    log.info(f"  [{idx}/{total_src}] {source[:90]}")
+    log.debug(f"  [{idx}/{total_src}] {source[:90]}")
 
     raw = collect_image(source, folder, cfg)
     if raw is None:
@@ -790,7 +796,7 @@ def _process_one(args):
 
     del processed  # free memory
 
-    log.info(f"  ✓ {out_path.name}  [{TW}×{TH}]")
+    log.debug(f"  ✓ {out_path.name}  [{TW}×{TH}]")
     result.update(status="OK", output_path=str(out_path), is_success=True)
     return result
 
