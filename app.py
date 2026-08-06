@@ -46,7 +46,7 @@ for k, v in {
     "logged_in": False, "user_name": "",
     "processing": False, "results": None,
     "preview_history": [], "preview_idx": 0,
-    "zip_bytes": None, "out_dir": None,
+    "zip_bytes": None, "zip_path": None, "out_dir": None,
 }.items():
     if k not in st.session_state:
         st.session_state[k] = v
@@ -166,6 +166,7 @@ if run_btn and uploaded_excel and not st.session_state.processing:
     st.session_state.preview_idx     = 0
     st.session_state.results         = None
     st.session_state.zip_bytes       = None
+    st.session_state.zip_path        = None
 
     # Save Excel to a persistent temp file (delete=False keeps it alive)
     tmp_excel = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
@@ -226,18 +227,19 @@ if run_btn and uploaded_excel and not st.session_state.processing:
     except Exception:
         pass
 
-    # Build ZIP from all output images
+    # Build ZIP on disk (not in memory — avoids OOM for large batches)
     out_files = [f for f in Path(out_dir).rglob("*")
                  if f.is_file() and f.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")]
 
     if out_files:
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zip_path = Path(out_dir) / "_psydox_output.zip"
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
             for f in out_files:
                 zf.write(f, f.relative_to(out_dir))
-        buf.seek(0)
-        st.session_state.zip_bytes = buf.getvalue()
+        st.session_state.zip_path = str(zip_path)
+        st.session_state.zip_bytes = None  # will be loaded from disk on demand
     else:
+        st.session_state.zip_path = None
         st.warning("No output images found. Check that your Excel URLs are publicly accessible.")
 
     st.session_state.results    = res
@@ -253,23 +255,36 @@ if st.session_state.results:
     c3.metric("✗ Failed",    res.get("failed",  0))
     c4.metric("⚠ Skipped",   res.get("skipped", 0))
 
+    # Load ZIP from disk into memory (only once; keep across reruns)
+    zip_path = st.session_state.get("zip_path")
+    if zip_path and Path(zip_path).exists() and not st.session_state.zip_bytes:
+        try:
+            with open(zip_path, "rb") as _zf:
+                st.session_state.zip_bytes = _zf.read()
+        except Exception as _ze:
+            st.error(f"Could not read ZIP file: {_ze}")
+
     if st.session_state.zip_bytes:
-        st.download_button(
-            "⬇  Download All Processed Images  (.zip)",
+        import gc, shutil
+        zip_size_mb = len(st.session_state.zip_bytes) / 1024 / 1024
+        clicked = st.download_button(
+            f"⬇  Download All Processed Images  (.zip)  —  {zip_size_mb:.1f} MB",
             data      = st.session_state.zip_bytes,
             file_name = "psydox_processed.zip",
             mime      = "application/zip",
             use_container_width=True,
         )
-        # Auto cleanup — free memory after download button is shown
-        import gc, shutil
-        try:
-            if "out_dir" in st.session_state and st.session_state.out_dir:
-                shutil.rmtree(st.session_state.out_dir, ignore_errors=True)
-                st.session_state.out_dir = None
-        except Exception:
-            pass
-        gc.collect()
+        # Cleanup only after download is triggered
+        if clicked:
+            try:
+                if st.session_state.out_dir:
+                    shutil.rmtree(st.session_state.out_dir, ignore_errors=True)
+                    st.session_state.out_dir = None
+                st.session_state.zip_bytes = None
+                st.session_state.zip_path  = None
+            except Exception:
+                pass
+            gc.collect()
     st.markdown("---")
 
 # ── Before / After Preview ────────────────────────────────────────────────────

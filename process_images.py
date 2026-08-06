@@ -520,6 +520,19 @@ def convert_to_4_5(img: Image.Image, cfg: dict) -> Image.Image:
     TW, TH = cfg["TARGET_W"], cfg["TARGET_H"]
     auto_mode = cfg.get("BG_RGB") == "auto"
 
+    # Convert to RGB early, drop alpha channel (saves memory)
+    img = img.convert("RGB")
+
+    # Cap input size: if source is much larger than target, pre-downscale fast
+    # with BOX filter first. This cuts LANCZOS work on huge originals (e.g. 6000×8000px)
+    MAX_SIDE = max(TW, TH) * 3  # anything more than 3× target is wasteful
+    orig_w, orig_h = img.size
+    if orig_w > MAX_SIDE or orig_h > MAX_SIDE:
+        pre_scale = MAX_SIDE / max(orig_w, orig_h)
+        pre_w = max(1, int(orig_w * pre_scale))
+        pre_h = max(1, int(orig_h * pre_scale))
+        img = img.resize((pre_w, pre_h), Image.BOX)
+
     # Only replace mixed backgrounds when a specific bg colour is chosen
     if not auto_mode:
         img = replace_mixed_background(img, cfg)
@@ -677,7 +690,7 @@ def build_pack_image(pil_images: list, cfg: dict) -> Image.Image:
 #  8.  ORCHESTRATOR (parallel workers — download + process simultaneously)
 # ══════════════════════════════════════════════════════════════════════════════
 import os as _os
-_WORKERS = 1   # single thread — safe for low-memory cloud environments
+_WORKERS = 2   # 2 threads — good balance of speed and memory on Railway 8GB
 
 def _process_one(args):
     """Process a single image: download/copy → convert → ratio-guard → save.
@@ -701,18 +714,21 @@ def _process_one(args):
 
     try:
         with Image.open(raw) as im:
-            im.load(); img_copy = im.copy()
+            im.load()
+            img_copy = im.convert("RGB")  # drop alpha, normalise mode
     except Exception as e:
         log.error(f"  ✗ open error {raw}: {e}")
         _safe_unlink(raw)
         result.update(status=f"SKIP_OPEN: {e}", is_skipped=True)
         return result
 
+    # Delete the raw download immediately — frees disk space early
+    _safe_unlink(raw)
+
     try:
         processed = convert_to_4_5(img_copy, cfg)
     except Exception as e:
-        log.error(f"  ✗ convert error {raw.name}: {e}")
-        _safe_unlink(raw)
+        log.error(f"  ✗ convert error: {e}")
         result.update(status=f"SKIP_CONVERT: {e}", is_skipped=True)
         return result
 
@@ -725,7 +741,6 @@ def _process_one(args):
         return result
 
     out_path = unique_filename(folder, raw.stem + ".jpg")
-    _safe_unlink(raw)
 
     # Post before/after preview — resize to small thumbnails to save memory
     try:
@@ -745,6 +760,9 @@ def _process_one(args):
     if not save_image(processed, out_path, cfg["JPEG_QUALITY"]):
         result.update(status="FAILED_SAVE", is_skipped=True)
         return result
+
+    # Free large image from memory now that it's saved
+    del processed, img_copy
 
     try:
         with Image.open(out_path) as saved:
