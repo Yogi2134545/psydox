@@ -128,47 +128,20 @@ class AIEditor:
 
         return img.point(curve)
 
-    # ── AI finishing ─────────────────────────────────────────────────────────
+    # ── AI finishing (PIL-based presets, no API needed) ───────────────────────
+
+    _FINISH_PRESETS = {
+        "Luxury":      {"contrast": 20, "brightness": 5,  "saturation": -10, "sharpness": 25, "temperature": 8},
+        "Marketplace": {"brightness": 15, "contrast": 10, "saturation": 10,  "sharpness": 30, "noise_reduction": 15},
+        "Studio":      {"contrast": 15, "brightness": 8,  "saturation": 5,   "sharpness": 20},
+        "Natural":     {"temperature": 15, "saturation": 10, "brightness": 5, "contrast": 5},
+        "Commercial":  {"saturation": 20, "contrast": 20, "sharpness": 35,   "brightness": 10},
+    }
 
     def apply_ai_finish(self, image: Image.Image, finish_type: str) -> Image.Image:
-        """Apply an AI-driven finish preset via Gemini."""
-        finish_map = {
-            "Luxury": (
-                "Apply a luxury high-end product photography finish: "
-                "enhance richness, add subtle warm glow, perfect highlights, "
-                "deep shadows, Hermes/Chanel quality aesthetic"
-            ),
-            "Marketplace": (
-                "Apply marketplace-optimized product photography finish: "
-                "bright even lighting, clean whites, accurate colors, "
-                "Amazon/Flipkart catalog standard quality"
-            ),
-            "Studio": (
-                "Apply professional studio photography finish: "
-                "perfect exposure, balanced shadows and highlights, "
-                "commercial product photography grade"
-            ),
-            "Natural": (
-                "Apply natural light photography finish: "
-                "warm natural tones, soft organic feel, "
-                "lifestyle photography aesthetic"
-            ),
-            "Commercial": (
-                "Apply commercial advertising finish: "
-                "vibrant colors, high clarity, eye-catching, "
-                "advertising campaign quality"
-            ),
-        }
-        instruction = finish_map.get(
-            finish_type,
-            f"Apply a {finish_type} photography finish to this product image"
-        )
-
-        img_bytes = io.BytesIO()
-        image.save(img_bytes, format="PNG")
-        result_bytes = self.client.edit_image(img_bytes.getvalue(), instruction)
-        result = Image.open(io.BytesIO(result_bytes))
-        return result.convert("RGB")
+        """Apply a photography finish preset using PIL (no API required)."""
+        settings = self._FINISH_PRESETS.get(finish_type, {"contrast": 10, "sharpness": 20})
+        return self.adjust(image, settings)
 
     # ── Upscaling ─────────────────────────────────────────────────────────────
 

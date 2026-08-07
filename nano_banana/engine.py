@@ -94,34 +94,48 @@ class NanoBananaEngine:
         else:
             return image
 
-    def _generate_scene(self, image: Image.Image, config: dict) -> Image.Image:
-        scene_type = config.get("scene_type", "Hero Product Shot")
-        product_desc = config.get("product_desc", "")
-        prompt = build_scene_prompt(scene_type, product_desc)
+    _NO_API_MSG = (
+        "This feature requires Imagen API access.\n\n"
+        "Your GOOGLE_API_KEY supports text + vision only.\n"
+        "To enable: go to https://aistudio.google.com and enable Imagen 3 (requires billing).\n\n"
+        "Background tab works without Imagen."
+    )
 
+    def _generate_scene(self, image: Image.Image, config: dict) -> Image.Image:
+        prompt = build_scene_prompt(config.get("scene_type", "Hero Product Shot"), config.get("product_desc", ""))
         ref_bytes = io.BytesIO()
         image.save(ref_bytes, format="PNG")
-        result_bytes = self.client.generate_image(prompt, reference_image_bytes=ref_bytes.getvalue())
-        return Image.open(io.BytesIO(result_bytes)).convert("RGB")
+        try:
+            result_bytes = self.client.generate_image(prompt, reference_image_bytes=ref_bytes.getvalue())
+            return Image.open(io.BytesIO(result_bytes)).convert("RGB")
+        except Exception as e:
+            if any(c in str(e) for c in ("404", "400", "403")):
+                raise RuntimeError(self._NO_API_MSG) from None
+            raise
 
     def _apply_lighting(self, image: Image.Image, config: dict) -> Image.Image:
-        lighting_type = config.get("lighting_type", "Soft Studio")
-        product_desc = config.get("product_desc", "")
-        prompt = build_lighting_prompt(lighting_type, product_desc)
-
+        prompt = build_lighting_prompt(config.get("lighting_type", "Soft Studio"), config.get("product_desc", ""))
         img_bytes = io.BytesIO()
         image.save(img_bytes, format="PNG")
-        result_bytes = self.client.edit_image(img_bytes.getvalue(), prompt)
-        return Image.open(io.BytesIO(result_bytes)).convert("RGB")
+        try:
+            result_bytes = self.client.edit_image(img_bytes.getvalue(), prompt)
+            return Image.open(io.BytesIO(result_bytes)).convert("RGB")
+        except Exception as e:
+            if any(c in str(e) for c in ("404", "400", "403")):
+                raise RuntimeError(self._NO_API_MSG) from None
+            raise
 
     def _apply_shadow(self, image: Image.Image, config: dict) -> Image.Image:
-        shadow_type = config.get("shadow_type", "Natural Drop Shadow")
-        prompt = build_shadow_prompt(shadow_type)
-
+        prompt = build_shadow_prompt(config.get("shadow_type", "Natural Drop Shadow"))
         img_bytes = io.BytesIO()
         image.save(img_bytes, format="PNG")
-        result_bytes = self.client.edit_image(img_bytes.getvalue(), prompt)
-        return Image.open(io.BytesIO(result_bytes)).convert("RGB")
+        try:
+            result_bytes = self.client.edit_image(img_bytes.getvalue(), prompt)
+            return Image.open(io.BytesIO(result_bytes)).convert("RGB")
+        except Exception as e:
+            if any(c in str(e) for c in ("404", "400", "403")):
+                raise RuntimeError(self._NO_API_MSG) from None
+            raise
 
     # ── Batch processing ──────────────────────────────────────────────────────
 
