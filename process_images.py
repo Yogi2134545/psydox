@@ -154,7 +154,7 @@ _SESSION.headers.update({
     "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
 })
 # Large connection pool — supports 12 parallel workers without TCP stalls
-_adapter = HTTPAdapter(pool_connections=30, pool_maxsize=30, max_retries=0)
+_adapter = HTTPAdapter(pool_connections=10, pool_maxsize=10, max_retries=0)
 _SESSION.mount("http://", _adapter)
 _SESSION.mount("https://", _adapter)
 
@@ -201,9 +201,14 @@ def download_image(url: str, dest_folder: Path, cfg: dict) -> Path | None:
             if not Path(raw_name).suffix:
                 raw_name += ext
             dest = unique_filename(dest_folder, raw_name)
+            # Per-chunk stall timeout — kills downloads that hang mid-stream
+            resp.raw.decode_content = True
+            import socket as _socket
+            resp.raw._connection.sock.settimeout(20) if hasattr(resp.raw, '_connection') and resp.raw._connection and hasattr(resp.raw._connection, 'sock') and resp.raw._connection.sock else None
             with open(dest, "wb") as f:
                 for chunk in resp.iter_content(65536):
-                    f.write(chunk)
+                    if chunk:
+                        f.write(chunk)
             log.debug(f"    ✓ downloaded → {dest.name}")
             return dest
         except Exception as exc:
@@ -730,7 +735,7 @@ def build_pack_image(pil_images: list, cfg: dict) -> Image.Image:
 #  8.  ORCHESTRATOR (parallel workers — download + process simultaneously)
 # ══════════════════════════════════════════════════════════════════════════════
 import os as _os
-_WORKERS = 24  # 24 parallel workers — maximise throughput on Railway
+_WORKERS = 8   # 8 workers — Dropbox rate-limits above ~8 simultaneous connections
 
 def _process_one(args):
     """Process a single image: download → convert → force exact size → save.
