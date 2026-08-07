@@ -385,7 +385,12 @@ def replace_mixed_background(img: Image.Image, cfg: dict) -> Image.Image:
     if not _cv2_available:
         return img  # skip background replacement if cv2 not available
 
-    arr = np.array(img.convert("RGB"))
+    # Downscale to max 1000px before heavy cv2 ops — faster, same result
+    work = img.copy()
+    if max(img.size) > 1000:
+        work.thumbnail((1000, 1000), Image.BOX)
+
+    arr = np.array(work.convert("RGB"))
     h, w = arr.shape[:2]
     lab  = cv2.cvtColor(arr, cv2.COLOR_RGB2LAB).astype(np.float32)
     d    = _BG_SAMPLE_DEPTH
@@ -407,8 +412,14 @@ def replace_mixed_background(img: Image.Image, cfg: dict) -> Image.Image:
     # Feather the mask edge for a smooth composite
     mask_f = cv2.GaussianBlur(mask.astype(np.float32), (7, 7), 0) / 255.0
 
-    bg_canvas = np.full_like(arr, bg_rgb, dtype=np.float32)
-    fg        = arr.astype(np.float32)
+    # Scale mask back up to original image size for compositing
+    orig_arr = np.array(img.convert("RGB"))
+    oh, ow = orig_arr.shape[:2]
+    if (h, w) != (oh, ow):
+        mask_f = cv2.resize(mask_f, (ow, oh), interpolation=cv2.INTER_LINEAR)
+
+    bg_canvas = np.full_like(orig_arr, bg_rgb, dtype=np.float32)
+    fg        = orig_arr.astype(np.float32)
     alpha     = mask_f[:, :, np.newaxis]
     composite = (fg * alpha + bg_canvas * (1 - alpha)).clip(0, 255).astype(np.uint8)
 
@@ -579,7 +590,7 @@ def convert_to_4_5(img: Image.Image, cfg: dict) -> Image.Image:
 
     nw = max(1, int(orig_w * scale))
     nh = max(1, int(orig_h * scale))
-    scaled = img.resize((nw, nh), Image.LANCZOS)
+    scaled = img.resize((nw, nh), Image.BICUBIC)
 
     # Centre on canvas
     px = (TW - nw) // 2
@@ -642,7 +653,7 @@ def save_image(processed: Image.Image, dest: Path, quality: int) -> bool:
         dest.parent.mkdir(parents=True, exist_ok=True)
         # subsampling=0 keeps full chroma resolution (4:4:4) — best quality at any quality level
         processed.convert("RGB").save(dest, "JPEG", quality=quality,
-                                      optimize=True, subsampling=0)
+                                      optimize=False, subsampling=2)
         return True
     except Exception as e:
         log.error(f"    ✗ save failed {dest}: {e}")
