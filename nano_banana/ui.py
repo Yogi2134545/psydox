@@ -40,6 +40,8 @@ def _init_nb_state():
         "nb_angle_results": [],
         "nb_angle_count": 1,
         "nb_packshot_results": [],
+        "nb_packshot_ref_bytes": None,
+        "nb_packshot_product_desc": "",
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -448,52 +450,49 @@ def render_nano_banana():
 
                 else:
                     # ── Multi-angle packshot generation (AI, N separate calls) ─
-                    from .api_client import ANGLE_VIEWS as _AV
+                    from .api_client import ANGLE_VIEWS as _AV, _build_angle_prompt
                     buf = io.BytesIO()
                     img.convert("RGB").save(buf, format="JPEG", quality=90)
                     ref_bytes = buf.getvalue()
 
                     selected_angles = _AV[:n]
-                    packshot_results = []
 
-                    # ── DEBUG PANEL ──────────────────────────────────────────
-                    dbg = st.expander("🔍 Debug Log (expand to trace execution)", expanded=True)
-                    dbg.write(f"**[DBG-1] Selected angles: {n}**")
-                    dbg.write(f"[DBG-1] Angle names: {[a['name'] for a in selected_angles]}")
-                    dbg.write(f"[DBG-2] Jobs to create: {len(selected_angles)}")
-                    dbg.write(f"[DBG-2] ref_bytes size: {len(ref_bytes)} bytes")
-                    dbg.write(f"[DBG-2] engine.client type: {type(engine.client).__name__}")
-                    dbg.write(f"[DBG-2] engine.client._sdk_ok: {engine.client._sdk_ok}")
-                    dbg.write(f"[DBG-2] engine.client.api_key set: {bool(engine.client.api_key)}")
-                    # ── END DEBUG PANEL ──────────────────────────────────────
+                    # Reset and store ref for per-angle regeneration
+                    st.session_state.nb_packshot_results = []
+                    st.session_state.nb_packshot_ref_bytes = ref_bytes
+                    st.session_state.nb_packshot_product_desc = product_desc_bg
+                    st.session_state.nb_angle_results = []
 
-                    with st.status(
-                        f"Generating {n} packshot angles — each is an independent AI job...",
-                        expanded=True,
-                    ) as status_box:
-                        for i, angle in enumerate(selected_angles):
-                            status_box.write(f"⏳ {angle['name']} ({i+1}/{n})...")
-                            dbg.write(f"---")
-                            dbg.write(f"**[DBG-3] API Call #{i+1}/{n}: {angle['name']}**")
-                            from .api_client import _build_angle_prompt
-                            prompt = _build_angle_prompt(product_desc_bg, angle)
-                            dbg.write(f"[DBG-4] Prompt #{i+1}: {prompt[:120]}...")
+                    prog = st.progress(0, text=f"Starting {n} generation jobs…")
+                    log_area = st.empty()
+                    log_lines = []
+
+                    def _log(msg):
+                        log_lines.append(msg)
+                        log_area.markdown("\n\n".join(log_lines[-12:]))
+
+                    _log(f"**Selected Angles = {n}**  |  Jobs Created = {len(selected_angles)}")
+
+                    for i, angle in enumerate(selected_angles):
+                        prog.progress(i / n,
+                                      text=f"⏳ API Call #{i+1}/{n} — {angle['name']}…")
+                        _log(f"API Call #{i+1}/{n}: **{angle['name']}** …")
+                        prompt = _build_angle_prompt(product_desc_bg, angle)
+                        try:
+                            img_bytes = engine.client.generate_image(prompt, ref_bytes)
+                            entry = {
+                                "name":  angle["name"],
+                                "label": angle["label"],
+                                "key":   angle["key"],
+                                "bytes": img_bytes,
+                                "error": None,
+                            }
+                            # Persist immediately so partial results survive
+                            st.session_state.nb_packshot_results.append(entry)
+                            _log(f"✅ #{i+1} {angle['name']} — "
+                                 f"{len(img_bytes):,} bytes  "
+                                 f"(stored={len(st.session_state.nb_packshot_results)})")
                             try:
-                                img_bytes = engine.client.generate_image(
-                                    prompt, ref_bytes
-                                )
-                                bytes_len = len(img_bytes) if img_bytes else 0
-                                dbg.write(f"**[DBG-5] ✅ Response #{i+1}: {bytes_len} bytes returned**")
-                                packshot_results.append({
-                                    "name":  angle["name"],
-                                    "label": angle["label"],
-                                    "key":   angle["key"],
-                                    "bytes": img_bytes,
-                                    "error": None,
-                                })
-                                dbg.write(f"[DBG-7] packshot_results length after append: {len(packshot_results)}")
-                                status_box.write(f"✅ {angle['name']} — done")
-                                # Save each angle to history individually
                                 from PIL import Image as _PIL
                                 result_img = _PIL.open(io.BytesIO(img_bytes))
                                 history.add(
@@ -502,110 +501,164 @@ def render_nano_banana():
                                     f"{angle['name']} — {product_desc_bg}",
                                     "Gemini",
                                 )
-                                st.session_state.nb_api_calls += 1
-                            except Exception as exc:
-                                err = str(exc)
-                                dbg.write(f"**[DBG-5] ❌ Response #{i+1}: EXCEPTION — {err[:200]}**")
-                                packshot_results.append({
-                                    "name":  angle["name"],
-                                    "label": angle["label"],
-                                    "key":   angle["key"],
-                                    "bytes": None,
-                                    "error": err,
-                                })
-                                dbg.write(f"[DBG-7] packshot_results length after append: {len(packshot_results)}")
-                                st.session_state.nb_errors += 1
-                                status_box.write(
-                                    f"❌ {angle['name']} — {err[:80]}"
-                                )
+                            except Exception:
+                                pass
+                            st.session_state.nb_api_calls += 1
+                        except Exception as exc:
+                            err = str(exc)
+                            entry = {
+                                "name":  angle["name"],
+                                "label": angle["label"],
+                                "key":   angle["key"],
+                                "bytes": None,
+                                "error": err,
+                            }
+                            st.session_state.nb_packshot_results.append(entry)
+                            _log(f"❌ #{i+1} {angle['name']} FAILED — {err[:120]}")
+                            st.session_state.nb_errors += 1
 
-                        elapsed = time.time() - t0
-                        st.session_state.nb_gen_time += elapsed
-                        good = sum(1 for r in packshot_results if r.get("bytes"))
-                        dbg.write(f"---")
-                        dbg.write(f"**[DBG-6] Loop finished. Total results: {len(packshot_results)}**")
-                        dbg.write(f"**[DBG-6] Results with bytes (images): {good}**")
-                        dbg.write(f"**[DBG-6] Results without bytes (failures): {len(packshot_results) - good}**")
-                        status_box.update(
-                            label=f"Complete: {good}/{n} angles generated in {elapsed:.1f}s",
-                            state="complete" if good == n else "error",
-                        )
-
-                    st.session_state.nb_packshot_results = packshot_results
-                    st.session_state.nb_angle_results = []
-                    dbg.write(f"**[DBG-8] Session state nb_packshot_results length: {len(st.session_state.nb_packshot_results)}**")
+                    elapsed = time.time() - t0
+                    st.session_state.nb_gen_time += elapsed
+                    good = sum(1 for r in st.session_state.nb_packshot_results
+                               if r.get("bytes"))
+                    _log(f"---")
+                    _log(f"**Images Returned = {good}  |  Images Stored = "
+                         f"{len(st.session_state.nb_packshot_results)}**")
+                    prog.progress(1.0,
+                                  text=f"✅ Done: {good}/{n} images in {elapsed:.1f}s")
+                    st.rerun()
 
         # ── Show single-BG result ─────────────────────────────────────────
         if st.session_state.nb_result and st.session_state.nb_result_mode == "background":
-            if not st.session_state.get("nb_packshot_results"):
+            if not st.session_state.nb_packshot_results:
                 _show_before_after(_get_image(), st.session_state.nb_result)
 
-        # ── Show packshot grid ────────────────────────────────────────────
-        if st.session_state.get("nb_packshot_results"):
-            ps_results = st.session_state.nb_packshot_results
-            good_n = sum(1 for r in ps_results if r.get("bytes"))
+        # ── Packshot gallery ──────────────────────────────────────────────
+        ps_results = st.session_state.nb_packshot_results   # always a list
+        if ps_results:
+            good_n  = sum(1 for r in ps_results if r.get("bytes"))
+            total_n = len(ps_results)
 
-            # ── DEBUG ────────────────────────────────────────────────────
-            st.info(
-                f"[DBG-9] Rendering gallery: "
-                f"total={len(ps_results)} | with_bytes={good_n} | "
-                f"without_bytes={len(ps_results)-good_n}"
-            )
-            for _di, _dr in enumerate(ps_results):
-                _blen = len(_dr.get("bytes") or b"")
-                st.caption(
-                    f"[DBG-9] item[{_di}] name={_dr['name']} "
-                    f"bytes={'YES ('+str(_blen)+')' if _dr.get('bytes') else 'NO'} "
-                    f"error={str(_dr.get('error',''))[:80] or 'none'}"
-                )
-            # ── END DEBUG ────────────────────────────────────────────────
+            st.markdown(f"### 📸 Generated Angles — {good_n}/{total_n} succeeded")
 
-            st.markdown(f"### 📸 {good_n}/{len(ps_results)} Packshot Angles")
-            _show_packshot_grid(ps_results, _get_image())
+            # ── Original ──────────────────────────────────────────────────
+            orig = _get_image()
+            if orig:
+                st.markdown("**Original**")
+                _c = st.columns([1, 3])
+                with _c[0]:
+                    st.image(orig, use_container_width=True)
+            st.markdown("**Generated Images**")
+            st.markdown("---")
 
+            # ── Per-angle cards ───────────────────────────────────────────
+            from .api_client import _build_angle_prompt as _bap
+            _ref  = st.session_state.nb_packshot_ref_bytes
+            _desc = st.session_state.nb_packshot_product_desc
+
+            cols_per_row = 3
+            for _row_start in range(0, total_n, cols_per_row):
+                _row_items = ps_results[_row_start:_row_start + cols_per_row]
+                _cols = st.columns(cols_per_row)
+                for _ci, _item in enumerate(_row_items):
+                    _idx = _row_start + _ci
+                    with _cols[_ci]:
+                        st.markdown(f"**{_item['name']}**")
+                        if _item.get("bytes"):
+                            st.image(_item["bytes"], use_container_width=True)
+                            st.download_button(
+                                f"⬇ {_item['label']}.jpg",
+                                data=_item["bytes"],
+                                file_name=f"{_item['key']}.jpg",
+                                mime="image/jpeg",
+                                key=f"nb_dl_ps_{_item['key']}",
+                                use_container_width=True,
+                            )
+                        else:
+                            st.error(f"Failed")
+                            if _item.get("error"):
+                                st.caption(_item["error"][:120])
+                        # ── Regenerate single angle ──────────────────
+                        if st.button(
+                            f"🔄 Regenerate",
+                            key=f"nb_regen_{_item['key']}",
+                            use_container_width=True,
+                        ) and _ref:
+                            with st.spinner(f"Regenerating {_item['name']}…"):
+                                try:
+                                    from .api_client import ANGLE_VIEWS as _AV2
+                                    _angle_def = next(
+                                        (a for a in _AV2 if a["key"] == _item["key"]),
+                                        None,
+                                    )
+                                    if _angle_def:
+                                        _new_bytes = engine.client.generate_image(
+                                            _bap(_desc, _angle_def), _ref
+                                        )
+                                        ps_results[_idx]["bytes"] = _new_bytes
+                                        ps_results[_idx]["error"] = None
+                                        st.session_state.nb_packshot_results = ps_results
+                                except Exception as _rex:
+                                    ps_results[_idx]["error"] = str(_rex)
+                                    st.session_state.nb_packshot_results = ps_results
+                            st.rerun()
+
+            st.markdown("---")
+
+            # ── Export section ────────────────────────────────────────────
             if good_n > 0:
                 st.markdown("#### ⬇ Export")
-                ec1, ec2, ec3 = st.columns(3)
-                with ec1:
-                    zip_data = _build_packshot_zip(ps_results)
+                _ec1, _ec2, _ec3 = st.columns(3)
+
+                with _ec1:
+                    _zip = _build_packshot_zip(ps_results)
                     st.download_button(
-                        f"ZIP ({good_n} images)",
-                        data=zip_data,
+                        f"📦 ZIP ({good_n} images)",
+                        data=_zip,
                         file_name="psydox_packshot.zip",
                         mime="application/zip",
                         use_container_width=True,
                         key="nb_ps_zip_dl",
                     )
-                with ec2:
-                    sheet_bytes = _build_contact_sheet(ps_results)
-                    if sheet_bytes:
+                    st.caption(
+                        "Contains: "
+                        + ", ".join(
+                            r["key"] + ".jpg"
+                            for r in ps_results
+                            if r.get("bytes")
+                        )
+                    )
+
+                with _ec2:
+                    _sheet = _build_contact_sheet(ps_results)
+                    if _sheet:
                         st.download_button(
-                            "Contact Sheet (JPG)",
-                            data=sheet_bytes,
+                            "🖼 Contact Sheet (JPG)",
+                            data=_sheet,
                             file_name="psydox_contact_sheet.jpg",
                             mime="image/jpeg",
                             use_container_width=True,
                             key="nb_ps_sheet_dl",
                         )
-                with ec3:
-                    # PDF: PIL can save multi-page JPEG as PDF
+                        st.image(_sheet, caption="Contact Sheet preview",
+                                 use_container_width=True)
+
+                with _ec3:
                     try:
-                        from PIL import Image as _PIL
-                        pdf_imgs = []
-                        for r in ps_results:
-                            if r.get("bytes"):
-                                pdf_imgs.append(
-                                    _PIL.open(io.BytesIO(r["bytes"])).convert("RGB")
-                                )
-                        if pdf_imgs:
-                            pdf_buf = io.BytesIO()
-                            pdf_imgs[0].save(
-                                pdf_buf, format="PDF", save_all=True,
-                                append_images=pdf_imgs[1:],
+                        from PIL import Image as _PPIL
+                        _pdf_imgs = [
+                            _PPIL.open(io.BytesIO(r["bytes"])).convert("RGB")
+                            for r in ps_results if r.get("bytes")
+                        ]
+                        if _pdf_imgs:
+                            _pdf_buf = io.BytesIO()
+                            _pdf_imgs[0].save(
+                                _pdf_buf, format="PDF", save_all=True,
+                                append_images=_pdf_imgs[1:],
                             )
                             st.download_button(
-                                "PDF (all angles)",
-                                data=pdf_buf.getvalue(),
+                                "📄 PDF (all angles)",
+                                data=_pdf_buf.getvalue(),
                                 file_name="psydox_packshot.pdf",
                                 mime="application/pdf",
                                 use_container_width=True,
@@ -613,6 +666,15 @@ def render_nano_banana():
                             )
                     except Exception:
                         pass
+
+            # ── Debug counters (always visible) ───────────────────────────
+            st.caption(
+                f"Debug — Selected Angles: {total_n} | "
+                f"Jobs Created: {total_n} | "
+                f"Images Stored: {total_n} | "
+                f"Images Rendered: {good_n} | "
+                f"ZIP Files: {good_n}"
+            )
 
     # ── Tab 2: Lifestyle ──────────────────────────────────────────────────────
     with tabs[1]:
