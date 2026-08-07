@@ -235,11 +235,11 @@ with st.sidebar:
         st.markdown("## 🤖 Processing Engine")
         engine_choice = st.radio(
             "Engine",
-            ["⚡ Classic Processing", "🍌 Nano Banana AI Studio"],
+            ["⚡ Classic Processing", "⚡ Psydox AI Studio"],
             key="engine_choice",
             label_visibility="collapsed",
         )
-        st.session_state.nb_mode = (engine_choice == "🍌 Nano Banana AI Studio")
+        st.session_state.nb_mode = (engine_choice == "⚡ Psydox AI Studio")
     else:
         st.session_state.nb_mode = False
 

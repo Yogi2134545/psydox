@@ -95,9 +95,8 @@ def render_nano_banana():
     st.markdown(
         "<div style='background:linear-gradient(135deg,#1a1a2e,#16213e);"
         "padding:16px 24px;border-radius:12px;margin-bottom:16px'>"
-        "<span style='font-size:28px'>🍌</span> "
-        "<span style='color:#FFD700;font-size:22px;font-weight:bold'>Nano Banana AI Studio</span>"
-        "<span style='color:#aaa;font-size:13px;margin-left:12px'>Powered by Google Gemini</span>"
+        "<span style='font-size:28px'>⚡</span> "
+        "<span style='color:#ff6600;font-size:22px;font-weight:bold'>Psydox AI Studio</span>"
         "</div>",
         unsafe_allow_html=True,
     )
