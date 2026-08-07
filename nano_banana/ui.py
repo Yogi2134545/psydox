@@ -289,8 +289,8 @@ def render_nano_banana():
     st.session_state.nb_angle_count = angle_count
     if angle_count > 1:
         st.info(
-            f"Will generate **{angle_count} angle variations** — front, side, 3/4, back, top, "
-            "close-up, low, elevated — and offer a ZIP download."
+            f"Will generate **{angle_count} background variations** — white, grey, beige, "
+            "blue-grey, green, dark, cream etc. — background removed automatically, ZIP download included."
         )
 
     st.markdown("---")
@@ -346,32 +346,28 @@ def render_nano_banana():
                             st.success(f"Done in {elapsed:.1f}s")
                             _show_before_after(img, result)
                         else:
-                            # Multi-angle: generate N variations
+                            # Multi-angle: PIL background variations
                             buf = io.BytesIO()
                             img.convert("RGB").save(buf, format="JPEG", quality=90)
                             ref_bytes = buf.getvalue()
-                            base_prompt = (
-                                f"Product photo with {bg_choice} background"
-                                + (f", {product_desc_bg}" if product_desc_bg else "")
-                                + (f", {custom_bg}" if custom_bg else "")
-                            )
                             results = engine.client.generate_angles(
-                                base_prompt, ref_bytes, count=n
+                                "", ref_bytes, count=n
                             )
                             elapsed = time.time() - t0
-                            st.session_state.nb_api_calls += n
                             st.session_state.nb_gen_time += elapsed
                             st.session_state.nb_angle_results = results
                             good = sum(1 for r in results if r is not None)
-                            st.success(f"Generated {good}/{n} angles in {elapsed:.1f}s")
+                            st.success(f"Generated {good}/{n} background variations in {elapsed:.1f}s")
                     except Exception as e:
                         st.session_state.nb_errors += 1
                         st.error(f"Error: {e}")
 
         # Show results
         if st.session_state.nb_angle_results:
+            from .api_client import _PIL_ANGLE_STYLES
             results = st.session_state.nb_angle_results
-            _show_angle_grid(results)
+            labels = [s["label"] for s in _PIL_ANGLE_STYLES[:len(results)]]
+            _show_angle_grid(results, labels)
             zip_data = _build_angles_zip(results, "bg")
             st.download_button(
                 f"⬇ Download All {len(results)} Angles (ZIP)",
