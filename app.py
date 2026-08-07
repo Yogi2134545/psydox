@@ -268,10 +268,15 @@ with st.sidebar:
 if run_btn and have_file and not is_run:
     excel_bytes = st.session_state.excel_bytes
     job_id      = hashlib.md5(excel_bytes).hexdigest()[:8]
-    out_dir     = str(_job_dir(job_id))
-    Path(out_dir).mkdir(parents=True, exist_ok=True)
 
-    excel_path = str(Path(out_dir) / "input.xlsx")
+    # Wipe stale output FIRST, then recreate and write Excel
+    job_dir = _job_dir(job_id)
+    if job_dir.exists():
+        shutil.rmtree(str(job_dir), ignore_errors=True)
+    job_dir.mkdir(parents=True, exist_ok=True)
+
+    out_dir    = str(job_dir)
+    excel_path = str(job_dir / "input.xlsx")
     with open(excel_path, "wb") as f:
         f.write(excel_bytes)
 
@@ -281,15 +286,6 @@ if run_btn and have_file and not is_run:
         MAX_RETRIES=int(mr), REQUEST_TIMEOUT=int(rt),
         USE_REMBG=False, BG_GREY=int(bggrey), BG_RGB=bgrgb, PACK_MODE=pack,
     )
-
-    # Always wipe previous output for this job so stale results are never served
-    old_dir = _job_dir(job_id)
-    if old_dir.exists():
-        try:
-            shutil.rmtree(str(old_dir), ignore_errors=True)
-        except Exception:
-            pass
-    old_dir.mkdir(parents=True, exist_ok=True)
 
     _JOBS[job_id] = {"running": True, "done": 0, "total": 0, "started": 0, "active": 0,
                      "results": None, "error": None, "zip_path": None, "previews": []}
