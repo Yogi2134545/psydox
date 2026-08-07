@@ -892,8 +892,11 @@ def render_nano_banana():
             run_startup_diagnostics,
             run_full_connection_test,
             run_production_checklist,
+            run_production_validation,
             get_error_log,
         )
+        import streamlit as _st  # alias for clarity inside nested calls
+        _user_email = st.session_state.get("user_email", "").lower()
 
         st.markdown("### 📊 Session Dashboard")
 
@@ -1051,3 +1054,124 @@ def render_nano_banana():
             st.dataframe(df, use_container_width=True)
         else:
             st.info("No generation history yet.")
+
+        st.markdown("---")
+
+        # ── Section 8: Production Validation (admin only) ─────────────────────
+        # Only visible to yogeshwar@popclub.co — no other user sees this section.
+        if _user_email == "yogeshwar@popclub.co":
+            st.markdown("### 🚀 Production Validation")
+            st.caption(
+                "Runs 15 real runtime tests against the live Railway environment. "
+                "This section is only visible to the admin account."
+            )
+
+            col_run, col_clear = st.columns([3, 1])
+            with col_run:
+                run_pv = st.button(
+                    "▶ Run Production Validation (15 steps)",
+                    key="nb_run_prod_validation",
+                    type="primary",
+                    use_container_width=True,
+                )
+            with col_clear:
+                if st.button("🗑️ Clear", key="nb_clear_prod_validation",
+                             use_container_width=True):
+                    if "nb_prod_validation" in st.session_state:
+                        del st.session_state["nb_prod_validation"]
+                    st.rerun()
+
+            if run_pv:
+                with st.spinner(
+                    "Running production validation — making real API calls. "
+                    "This may take 30–90 seconds..."
+                ):
+                    st.session_state["nb_prod_validation"] = run_production_validation(
+                        engine, GOOGLE_API_KEY
+                    )
+
+            if "nb_prod_validation" in st.session_state:
+                pv = st.session_state["nb_prod_validation"]
+                env  = pv.get("env_info", {})
+                v_list = pv.get("verified", [])
+                f_list = pv.get("failed", [])
+                n_list = pv.get("not_verified", [])
+
+                # ── Environment info ──────────────────────────────────────────
+                with st.expander("🔍 Environment info", expanded=False):
+                    env_rows = []
+                    for key_name in ("python", "google-genai", "google-generativeai",
+                                     "Pillow", "rembg", "os",
+                                     "api_key_masked", "api_key_format",
+                                     "auth_method", "auth_status", "model_count",
+                                     "selected_model", "endpoint", "sdk_ok"):
+                        if key_name in env:
+                            env_rows.append({"Item": key_name,
+                                             "Value": str(env[key_name])})
+                    if env_rows:
+                        st.dataframe(pd.DataFrame(env_rows),
+                                     use_container_width=True, hide_index=True)
+                    im = env.get("image_models", [])
+                    if im:
+                        st.markdown(f"**Image-capable models ({len(im)}):** "
+                                    f"`{', '.join(im)}`")
+                    all_m = env.get("all_models", [])
+                    if all_m:
+                        with st.expander(f"All accessible models ({len(all_m)})",
+                                         expanded=False):
+                            for m in sorted(all_m):
+                                st.text(m)
+
+                # ── Summary counts ────────────────────────────────────────────
+                sv, sf, sn = len(v_list), len(f_list), len(n_list)
+                sc1, sc2, sc3, sc4 = st.columns(4)
+                sc1.metric("✅ Verified", sv)
+                sc2.metric("❌ Failed", sf)
+                sc3.metric("⚠️ Not Verified", sn)
+                sc4.metric("⏱ Elapsed", f"{pv.get('elapsed', 0):.1f}s")
+
+                # ── Generated test image ──────────────────────────────────────
+                img_bytes = pv.get("test_image_bytes")
+                bg_bytes  = pv.get("bg_image_bytes")
+                if img_bytes or bg_bytes:
+                    st.markdown("**Test images from validation run:**")
+                    img_cols = st.columns(2)
+                    if img_bytes:
+                        with img_cols[0]:
+                            st.markdown("*Generated (Text-to-Image)*")
+                            st.image(img_bytes, use_container_width=True)
+                    if bg_bytes:
+                        with img_cols[1]:
+                            st.markdown("*Background Replacement test*")
+                            st.image(bg_bytes, use_container_width=True)
+
+                # ── VERIFIED ──────────────────────────────────────────────────
+                st.markdown("#### ✅ VERIFIED")
+                if v_list:
+                    for item in v_list:
+                        with st.expander(f"✅ {item['name']}", expanded=False):
+                            st.markdown(item["detail"])
+                else:
+                    st.warning("No items verified.")
+
+                # ── FAILED ───────────────────────────────────────────────────
+                st.markdown("#### ❌ FAILED")
+                if f_list:
+                    for item in f_list:
+                        with st.expander(f"❌ {item['name']}", expanded=True):
+                            st.error(item["detail"])
+                            if item.get("google_response"):
+                                st.markdown("**Google API response:**")
+                                st.code(item["google_response"], language="json")
+                else:
+                    st.success("No failures.")
+
+                # ── NOT VERIFIED ──────────────────────────────────────────────
+                st.markdown("#### ⚠️ NOT VERIFIED")
+                if n_list:
+                    for item in n_list:
+                        st.markdown(
+                            f"⚠️ **{item['name']}** — {item['reason']}"
+                        )
+                else:
+                    st.success("All items verified or failed with a result.")

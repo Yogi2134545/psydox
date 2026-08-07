@@ -121,9 +121,9 @@ class GeminiClient:
         """Query the API and return every model the key can access."""
         if not self.api_key:
             return []
-        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={self.api_key}"
+        from .diagnostics import _api_get
         try:
-            resp = requests.get(url, timeout=30)
+            resp = _api_get("/v1beta/models", self.api_key, timeout=30)
             resp.raise_for_status()
             return resp.json().get("models", [])
         except Exception as e:
@@ -155,11 +155,10 @@ class GeminiClient:
             )
             candidates = _IMAGE_MODELS_OFFICIAL
 
+        from .diagnostics import _api_get
         for name in candidates:
-            url = (f"https://generativelanguage.googleapis.com/v1beta/models/{name}"
-                   f"?key={self.api_key}")
             try:
-                resp = requests.get(url, timeout=15)
+                resp = _api_get(f"/v1beta/models/{name}", self.api_key, timeout=15)
                 if resp.ok:
                     _log.info("Image model confirmed available: %s", name)
                     self._active_model = name
@@ -234,12 +233,9 @@ class GeminiClient:
             return report
 
         # Check whether the model endpoint says it supports generateContent
-        model_info_url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/{model}"
-            f"?key={self.api_key}"
-        )
+        from .diagnostics import _api_get
         try:
-            r = requests.get(model_info_url, timeout=15)
+            r = _api_get(f"/v1beta/models/{model}", self.api_key, timeout=15)
             if r.ok:
                 info = r.json()
                 methods = info.get("supportedGenerationMethods", [])
@@ -308,16 +304,16 @@ class GeminiClient:
                 _log.error("TEST FAILED — model=%s  error=%s", model, err)
                 return {"success": False, "model": model, "error": err}
 
-        # SDK not available — try REST
-        url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-               f"{model}:generateContent?key={self.api_key}")
+        # SDK not available — try REST (dual auth: query param + x-goog-api-key header)
+        from .diagnostics import _api_post
         payload = {
             "contents": [{"parts": [{"text": "Generate a small red circle on white background"}]}],
             "generationConfig": {"responseModalities": ["IMAGE", "TEXT"]},
         }
-        _log.info("TEST REST  url=%s", url)
+        _log.info("TEST REST  model=%s", model)
         try:
-            resp = requests.post(url, json=payload, timeout=60)
+            resp = _api_post(f"/v1beta/models/{model}:generateContent",
+                             self.api_key, payload, timeout=60)
             try:
                 body = resp.json()
             except Exception:
@@ -330,7 +326,7 @@ class GeminiClient:
                               if isinstance(body, dict) else body)
                 return {"success": False, "model": model,
                         "error": f"HTTP {resp.status_code}: {google_err}",
-                        "url": url, "response_body": body}
+                        "response_body": body}
             for part in (body.get("candidates", [{}])[0]
                              .get("content", {}).get("parts", [])):
                 if "inlineData" in part:
