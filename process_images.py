@@ -14,7 +14,7 @@ DEFAULT_TARGET_W      = 1080          # output width  (4 : 5 ratio)
 DEFAULT_TARGET_H      = 1350          # output height (4 : 5 ratio)
 DEFAULT_JPEG_QUALITY  = 92            # 1-95  (90+ for professional output)
 DEFAULT_MAX_RETRIES   = 3             # retry downloads up to 3 times
-DEFAULT_REQUEST_TIMEOUT = 15          # seconds
+DEFAULT_REQUEST_TIMEOUT = 30          # seconds (read timeout; connect is always 5s)
 DEFAULT_USE_REMBG     = False         # True = better product detection (needs onnxruntime)
 DEFAULT_BG_GREY       = 235           # 0=black … 255=white; 235 = light studio grey
 DEFAULT_PACK_MODE     = False         # True = also build a pack-shot composite per style
@@ -154,7 +154,7 @@ _SESSION.headers.update({
     "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
 })
 # Large connection pool — supports 12 parallel workers without TCP stalls
-_adapter = HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=0)
+_adapter = HTTPAdapter(pool_connections=30, pool_maxsize=30, max_retries=0)
 _SESSION.mount("http://", _adapter)
 _SESSION.mount("https://", _adapter)
 
@@ -188,7 +188,7 @@ def download_image(url: str, dest_folder: Path, cfg: dict) -> Path | None:
     direct_url = _resolve_url(url)
     for attempt in range(1, cfg["MAX_RETRIES"] + 1):
         try:
-            resp = _SESSION.get(direct_url, timeout=cfg["REQUEST_TIMEOUT"], stream=True, allow_redirects=True)
+            resp = _SESSION.get(direct_url, timeout=(5, cfg["REQUEST_TIMEOUT"]), stream=True, allow_redirects=True)
             resp.raise_for_status()
             ct = resp.headers.get("Content-Type", "")
             # If we got HTML instead of an image, the link is a viewer page — fail fast
@@ -719,7 +719,7 @@ def build_pack_image(pil_images: list, cfg: dict) -> Image.Image:
 #  8.  ORCHESTRATOR (parallel workers — download + process simultaneously)
 # ══════════════════════════════════════════════════════════════════════════════
 import os as _os
-_WORKERS = 12  # 12 parallel workers across all style codes simultaneously
+_WORKERS = 24  # 24 parallel workers — maximise throughput on Railway
 
 def _process_one(args):
     """Process a single image: download → convert → force exact size → save.
