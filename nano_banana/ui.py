@@ -105,17 +105,53 @@ def render_nano_banana():
         _api_warning()
 
     # ── Image upload ──────────────────────────────────────────────────────────
-    with st.expander("📁 Upload Product Image", expanded=st.session_state.nb_uploaded_image is None):
+    # ── Image input (always visible) ─────────────────────────────────────────
+    st.markdown("### 📥 Input Image")
+    col_up, col_url = st.columns([1, 1])
+
+    with col_up:
         up = st.file_uploader(
-            "Upload a product image (PNG / JPG / WEBP)",
+            "Upload from device",
             type=["png", "jpg", "jpeg", "webp"],
             key="nb_file_uploader",
+            label_visibility="visible",
         )
         if up:
             img = Image.open(up).convert("RGB")
             st.session_state.nb_uploaded_image = img
-            st.success(f"Image loaded: {img.width}×{img.height}px")
-            st.image(img, width=300)
+
+    with col_url:
+        url_input = st.text_input(
+            "Or paste image URL",
+            key="nb_url_input",
+            placeholder="https://example.com/image.jpg",
+        )
+        if st.button("Load URL", key="nb_url_load"):
+            if url_input.strip():
+                try:
+                    import requests as _req
+                    r = _req.get(url_input.strip(), timeout=15,
+                                 headers={"User-Agent": "Mozilla/5.0"})
+                    r.raise_for_status()
+                    img = Image.open(io.BytesIO(r.content)).convert("RGB")
+                    st.session_state.nb_uploaded_image = img
+                    st.success("Image loaded from URL")
+                except Exception as e:
+                    st.error(f"Failed to load URL: {e}")
+
+    if st.session_state.nb_uploaded_image:
+        img_disp = st.session_state.nb_uploaded_image
+        c1, c2, c3 = st.columns([1, 2, 1])
+        with c2:
+            st.image(img_disp, use_container_width=True,
+                     caption=f"{img_disp.width}×{img_disp.height}px")
+        if st.button("🗑️ Clear image", key="nb_clear_img"):
+            st.session_state.nb_uploaded_image = None
+            st.rerun()
+    else:
+        st.info("Upload an image or paste a URL to get started.")
+
+    st.markdown("---")
 
     # ── Tabs ──────────────────────────────────────────────────────────────────
     tabs = st.tabs([
