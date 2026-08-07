@@ -184,37 +184,54 @@ def _resolve_url(url: str) -> str:
     return url
 
 def download_image(url: str, dest_folder: Path, cfg: dict) -> Path | None:
+    import random, socket as _socket
     from urllib.parse import unquote
     direct_url = _resolve_url(url)
+
     for attempt in range(1, cfg["MAX_RETRIES"] + 1):
         try:
-            resp = _SESSION.get(direct_url, timeout=(5, cfg["REQUEST_TIMEOUT"]), stream=True, allow_redirects=True)
+            resp = _SESSION.get(direct_url, timeout=(5, cfg["REQUEST_TIMEOUT"]),
+                                stream=True, allow_redirects=True)
+
+            # Dropbox rate limit — back off and retry
+            if resp.status_code == 429:
+                wait = int(resp.headers.get("Retry-After", 5)) + random.uniform(1, 3)
+                log.warning(f"    429 rate limited — waiting {wait:.1f}s")
+                time.sleep(wait)
+                continue
+
             resp.raise_for_status()
             ct = resp.headers.get("Content-Type", "")
-            # If we got HTML instead of an image, the link is a viewer page — fail fast
             if "text/html" in ct:
                 log.error(f"    ✗ got HTML page instead of image: {url}")
                 return None
+
             ext      = guess_extension(direct_url, ct)
             raw_name = unquote(Path(urlparse(direct_url).path).name or hashlib.md5(url.encode()).hexdigest())
             raw_name = re.sub(r'[\\/:*?"<>|]', "_", raw_name)
             if not Path(raw_name).suffix:
                 raw_name += ext
             dest = unique_filename(dest_folder, raw_name)
-            # Per-chunk stall timeout — kills downloads that hang mid-stream
-            resp.raw.decode_content = True
-            import socket as _socket
-            resp.raw._connection.sock.settimeout(20) if hasattr(resp.raw, '_connection') and resp.raw._connection and hasattr(resp.raw._connection, 'sock') and resp.raw._connection.sock else None
-            with open(dest, "wb") as f:
-                for chunk in resp.iter_content(65536):
-                    if chunk:
-                        f.write(chunk)
+
+            # Write with per-chunk stall timeout via socket default timeout on this thread
+            old_to = _socket.getdefaulttimeout()
+            _socket.setdefaulttimeout(20)
+            try:
+                with open(dest, "wb") as f:
+                    for chunk in resp.iter_content(65536):
+                        if chunk:
+                            f.write(chunk)
+            finally:
+                _socket.setdefaulttimeout(old_to)
+
             log.debug(f"    ✓ downloaded → {dest.name}")
             return dest
+
         except Exception as exc:
             log.warning(f"    attempt {attempt}/{cfg['MAX_RETRIES']} failed: {exc}")
             if attempt < cfg["MAX_RETRIES"]:
-                time.sleep(0.5 * attempt)
+                time.sleep(random.uniform(0.5, 1.5) * attempt)
+
     log.error(f"    ✗ gave up: {url}")
     return None
 
