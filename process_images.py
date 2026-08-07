@@ -13,7 +13,7 @@ DEFAULT_OUTPUT_FOLDER = "processed_images"
 DEFAULT_TARGET_W      = 1080          # output width  (4 : 5 ratio)
 DEFAULT_TARGET_H      = 1350          # output height (4 : 5 ratio)
 DEFAULT_JPEG_QUALITY  = 92            # 1-95  (90+ for professional output)
-DEFAULT_MAX_RETRIES   = 5             # retry downloads up to 5 times
+DEFAULT_MAX_RETRIES   = 3             # retry downloads up to 3 times
 DEFAULT_REQUEST_TIMEOUT = 15          # seconds
 DEFAULT_USE_REMBG     = False         # True = better product detection (needs onnxruntime)
 DEFAULT_BG_GREY       = 235           # 0=black … 255=white; 235 = light studio grey
@@ -145,13 +145,18 @@ def guess_extension(url: str, ct: str = "") -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 #  3.  DOWNLOAD / COPY
 # ══════════════════════════════════════════════════════════════════════════════
+from requests.adapters import HTTPAdapter
 _SESSION = requests.Session()
-_SESSION.verify = True   # Zscaler cert is baked into the CA bundle
+_SESSION.verify = True
 _SESSION.headers.update({
     "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
     "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
 })
+# Large connection pool — supports 12 parallel workers without TCP stalls
+_adapter = HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=0)
+_SESSION.mount("http://", _adapter)
+_SESSION.mount("https://", _adapter)
 
 def _resolve_url(url: str) -> str:
     """Convert share-page URLs to direct download URLs."""
@@ -197,14 +202,14 @@ def download_image(url: str, dest_folder: Path, cfg: dict) -> Path | None:
                 raw_name += ext
             dest = unique_filename(dest_folder, raw_name)
             with open(dest, "wb") as f:
-                for chunk in resp.iter_content(8192):
+                for chunk in resp.iter_content(65536):
                     f.write(chunk)
             log.debug(f"    ✓ downloaded → {dest.name}")
             return dest
         except Exception as exc:
             log.warning(f"    attempt {attempt}/{cfg['MAX_RETRIES']} failed: {exc}")
             if attempt < cfg["MAX_RETRIES"]:
-                time.sleep(1.5 * attempt)
+                time.sleep(0.5 * attempt)
     log.error(f"    ✗ gave up: {url}")
     return None
 
