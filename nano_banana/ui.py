@@ -889,9 +889,9 @@ def render_nano_banana():
     # ── Tab 14: Dashboard ─────────────────────────────────────────────────────
     with tabs[13]:
         st.markdown("### 📊 Session Dashboard")
-        api_calls = st.session_state.nb_api_calls
-        gen_time  = st.session_state.nb_gen_time
-        errors    = st.session_state.nb_errors
+        api_calls  = st.session_state.nb_api_calls
+        gen_time   = st.session_state.nb_gen_time
+        errors     = st.session_state.nb_errors
         hist_count = history.count()
 
         c1, c2, c3, c4, c5 = st.columns(5)
@@ -901,30 +901,117 @@ def render_nano_banana():
         c4.metric("Avg per Image", f"{gen_time/max(api_calls,1):.1f}s")
         c5.metric("Errors", errors)
 
-        # Estimated cost (rough: ~$0.04 per API call for Imagen)
-        est_cost = api_calls * 0.04
-        st.metric("Estimated API Cost", f"${est_cost:.2f}")
+        st.markdown("---")
+
+        # ── Startup Diagnostics ───────────────────────────────────────────────
+        st.markdown("### 🔬 API Compatibility Report")
+
+        from .api_client import get_versions, _IMAGE_MODELS_OFFICIAL
+
+        versions = get_versions()
+        st.markdown("**Installed versions**")
+        vcols = st.columns(5)
+        for i, (pkg, ver) in enumerate(versions.items()):
+            vcols[i % 5].code(f"{pkg}\n{ver}")
+
+        st.markdown("**Official image-generation models (checked 2026-08-07)**")
+        for m in _IMAGE_MODELS_OFFICIAL:
+            st.code(m)
+
+        masked_key = ("NOT SET" if not GOOGLE_API_KEY else
+                      "*" * max(0, len(GOOGLE_API_KEY) - 4) + GOOGLE_API_KEY[-4:])
+        st.markdown(f"**API key loaded:** `{masked_key}`")
+        st.markdown("**Authentication method:** API key (query parameter)")
+        st.markdown("**Endpoint:** `https://generativelanguage.googleapis.com/v1beta/models/{{model}}:generateContent`")
 
         st.markdown("---")
-        st.markdown("**API Configuration**")
-        if GOOGLE_API_KEY:
-            st.success(f"GOOGLE_API_KEY: configured ({GOOGLE_API_KEY[:8]}...)")
-        else:
-            st.error("GOOGLE_API_KEY: not configured")
 
+        # ── Test Connection button ────────────────────────────────────────────
+        st.markdown("### 🔌 Test Connection")
+        if st.button("▶ Run Full Compatibility Test", key="nb_test_conn", type="primary"):
+            with st.spinner("Running diagnostics — this may take 20–30 seconds..."):
+                report = engine.client.run_diagnostics()
+
+            st.markdown("#### Results")
+
+            def _check(label: str, ok: bool, detail: str = ""):
+                icon = "✅" if ok else "❌"
+                msg = f"{icon} **{label}**"
+                if detail:
+                    msg += f" — {detail}"
+                st.markdown(msg)
+
+            _check("SDK compatible (google-genai installed)",
+                   report["sdk_compatible"],
+                   versions.get("google-genai", "not installed"))
+
+            _check("API key loaded",
+                   report["api_key_loaded"],
+                   report["api_key_masked"])
+
+            model_found = report["image_model_found"]
+            _check("Image model found",
+                   report["model_compatible"],
+                   model_found or "none of the official models responded 200")
+
+            _check("Endpoint compatible",
+                   report["model_compatible"],
+                   report["endpoint"])
+
+            _check("Authentication valid",
+                   report["api_key_loaded"] and not any("PERMISSION" in e for e in report["errors"]),
+                   "API key accepted" if report["api_key_loaded"] else "no key")
+
+            _check("Image generation supported",
+                   report["image_gen_supported"],
+                   f"model={model_found}" if model_found else "")
+
+            _check("Image editing supported",
+                   report["image_edit_supported"],
+                   "same endpoint as generation")
+
+            test = report.get("test_image_result") or {}
+            _check("Test image generation passed",
+                   test.get("success", False),
+                   f"model={test.get('model')}" if test.get("success") else test.get("error", ""))
+
+            if report["errors"]:
+                st.markdown("**Errors:**")
+                for err in report["errors"]:
+                    st.error(err)
+
+            if report["warnings"]:
+                st.markdown("**Warnings:**")
+                for w in report["warnings"]:
+                    st.warning(w)
+
+            if report["available_models"]:
+                with st.expander(f"All accessible models ({len(report['available_models'])})"):
+                    for m in sorted(report["available_models"]):
+                        st.text(m)
+
+            if not report["image_gen_supported"]:
+                st.info(
+                    "**How to enable image generation:**\n\n"
+                    "1. Go to https://aistudio.google.com\n"
+                    "2. Sign in with the account that owns this API key\n"
+                    "3. Enable Imagen / image generation access (requires billing)\n"
+                    "4. The official supported models are: `" +
+                    "`, `".join(_IMAGE_MODELS_OFFICIAL) + "`\n\n"
+                    "Background replacement, Enhance, and Editor tabs work **without** "
+                    "image generation — they use rembg + PIL locally."
+                )
+
+        st.markdown("---")
+        st.markdown("**Generation History**")
         hist = history.get_all()
         if hist:
-            st.markdown("**Generation History**")
             import pandas as pd
             df = pd.DataFrame([
-                {
-                    "ID": h["id"],
-                    "Type": h["job_type"],
-                    "Prompt": h["prompt"][:60],
-                    "Engine": h["engine"],
-                    "Time": h["timestamp"],
-                    "Status": h["status"],
-                }
+                {"ID": h["id"], "Type": h["job_type"], "Prompt": h["prompt"][:60],
+                 "Engine": h["engine"], "Time": h["timestamp"], "Status": h["status"]}
                 for h in hist
             ])
             st.dataframe(df, use_container_width=True)
+        else:
+            st.info("No generation history yet.")
