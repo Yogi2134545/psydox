@@ -972,13 +972,13 @@ def render_nano_banana():
 
         # ── Section 4: Production Checklist ──────────────────────────────────
         st.markdown("### ✔️ Production Checklist")
-        if st.button("▶ Run Production Checklist", key="nb_prod_checklist"):
+        if st.button("▶ Run Production Checklist", key="nb_btn_prod_checklist"):
             with st.spinner("Running production checks..."):
                 checklist = run_production_checklist(engine, GOOGLE_API_KEY)
-            st.session_state["nb_prod_checklist"] = checklist
+            st.session_state["nb_prod_checklist_result"] = checklist
 
-        if "nb_prod_checklist" in st.session_state:
-            cl = st.session_state["nb_prod_checklist"]
+        if "nb_prod_checklist_result" in st.session_state:
+            cl = st.session_state["nb_prod_checklist_result"]
             for key, result in cl.items():
                 label = key.replace("_", " ").title()
                 ok = result.get("ok")
