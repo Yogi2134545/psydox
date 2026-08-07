@@ -203,7 +203,10 @@ def download_image(url: str, dest_folder: Path, cfg: dict) -> Path | None:
             resp.raise_for_status()
             ct = resp.headers.get("Content-Type", "")
             if "text/html" in ct:
-                log.error(f"    ✗ got HTML page instead of image: {url}")
+                if "dropbox.com" in direct_url or "dropboxusercontent.com" in direct_url:
+                    log.error(f"    ✗ Dropbox blocked server download (session token expired or access restricted): {url[:80]}")
+                else:
+                    log.error(f"    ✗ got HTML page instead of image: {url[:80]}")
                 return None
 
             ext      = guess_extension(direct_url, ct)
@@ -873,6 +876,27 @@ def process_all(cfg: dict,
 
     total = len(all_tasks)
     pack_images_by_style = {sc: [] for sc in style_map}
+
+    # Early Dropbox block detection — test first URL before processing all
+    first_urls = [t[0] for t in all_tasks if "dropbox" in str(t[0]).lower()]
+    if first_urls:
+        test_url = _resolve_url(first_urls[0])
+        try:
+            _test = _SESSION.get(test_url, timeout=(5, 10), stream=True)
+            _ct = _test.headers.get("Content-Type", "")
+            _test.close()
+            if "text/html" in _ct:
+                raise RuntimeError(
+                    "Dropbox is blocking server-side downloads for these URLs.\n\n"
+                    "Your Dropbox links contain '&st=' session tokens that only work in a browser.\n\n"
+                    "To fix: use Google Drive links instead, or remove '&st=XXXXXXXX' from all "
+                    "Dropbox URLs in your Excel file. Go to Dropbox → Share → 'Anyone with the link' "
+                    "and copy the fresh link (it should not contain '&st=')."
+                )
+        except RuntimeError:
+            raise
+        except Exception:
+            pass  # Network error on test — proceed anyway
 
     import threading as _threading
     _started_count = [0]
