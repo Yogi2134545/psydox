@@ -4,6 +4,12 @@ import yaml, bcrypt, zipfile, json, tempfile, threading, gc, shutil, hashlib
 from pathlib import Path
 from math import gcd
 
+try:
+    from nano_banana.ui import render_nano_banana as _render_nano_banana
+    _NB_AVAILABLE = True
+except ImportError:
+    _NB_AVAILABLE = False
+
 st.set_page_config(page_title="Psydox", page_icon="⚡", layout="wide",
                    initial_sidebar_state="expanded")
 
@@ -115,6 +121,7 @@ if not st.session_state.logged_in:
             if name:
                 st.session_state.logged_in = True
                 st.session_state.user_name = name
+                st.session_state.user_email = email.lower().strip()
                 st.rerun()
             else:
                 st.error("Incorrect email or password.")
@@ -218,6 +225,23 @@ with st.sidebar:
     bggrey = int(sum(bgrgb)/3) if isinstance(bgrgb, tuple) else DEFAULT_BG_GREY
 
     pack = st.checkbox("Pack Shot Mode")
+
+    # Engine selector — only visible to yogeshwar@popclub.co
+    _is_admin = (
+        st.session_state.get("user_name", "") and
+        st.session_state.get("user_email", "").lower() == "yogeshwar@popclub.co"
+    )
+    if _is_admin and _NB_AVAILABLE:
+        st.markdown("## 🤖 Processing Engine")
+        engine_choice = st.radio(
+            "Engine",
+            ["⚡ Classic Processing", "🍌 Nano Banana AI Studio"],
+            key="engine_choice",
+            label_visibility="collapsed",
+        )
+        st.session_state.nb_mode = (engine_choice == "🍌 Nano Banana AI Studio")
+    else:
+        st.session_state.nb_mode = False
 
     st.markdown("---")
 
@@ -390,3 +414,9 @@ elif not job.get("running") and not job.get("results") and not job.get("error"):
       <div style='font-size:64px'>⚡</div>
       <h3 style='color:#666'>Upload your Excel and click RUN</h3>
     </div>""", unsafe_allow_html=True)
+
+# ═══════════════════════════════════════════════════════════════════
+#  NANO BANANA AI STUDIO
+# ═══════════════════════════════════════════════════════════════════
+if st.session_state.get("nb_mode"):
+    _render_nano_banana()
