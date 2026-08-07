@@ -7,25 +7,29 @@ from typing import Optional
 
 from .settings import GOOGLE_API_KEY
 
+_GEMINI_IMG_MODEL = "gemini-2.0-flash-exp-image-generation"
+_GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+
+_ANGLE_PROMPTS = [
+    "front view, straight on",
+    "side profile view, 90 degrees",
+    "three-quarter angle view, 45 degrees",
+    "back view",
+    "top-down overhead view",
+    "close-up detail shot, macro",
+    "low angle dramatic upward view",
+    "elevated 45-degree view",
+]
+
 
 class GeminiClient:
     """Wraps Google Generative AI for image generation and editing."""
 
     def __init__(self):
         self.api_key = GOOGLE_API_KEY
-        self._genai = None
-        if self.api_key:
-            try:
-                import google.generativeai as genai
-                genai.configure(api_key=self.api_key)
-                self._genai = genai
-            except ImportError:
-                pass
-
-    # ── internal helpers ──────────────────────────────────────────────────────
 
     def _is_configured(self) -> bool:
-        return bool(self.api_key and self._genai)
+        return bool(self.api_key)
 
     def _retry(self, fn, attempts: int = 3):
         last_err = None
@@ -38,108 +42,75 @@ class GeminiClient:
                     time.sleep(2 ** i)
         raise last_err
 
-    # ── image generation via Imagen REST ─────────────────────────────────────
+    # ── core REST helper ──────────────────────────────────────────────────────
 
-    def generate_image(self, prompt: str, reference_image_bytes: bytes = None) -> bytes:
-        """
-        Generate an image from a text prompt (and optionally a reference image).
-        Returns raw image bytes (JPEG/PNG).
-        """
+    def _generate_image_rest(self, parts: list) -> bytes:
+        """Call gemini-2.0-flash-exp-image-generation via REST and return image bytes."""
         if not self.api_key:
             raise RuntimeError(
                 "GOOGLE_API_KEY not configured. Set it as an environment variable."
             )
-
-        # If reference image provided, use Gemini vision for guided generation
-        if reference_image_bytes and self._genai:
-            return self._guided_generation(prompt, reference_image_bytes)
-
-        # Otherwise use Imagen 3 for pure text-to-image
-        return self._imagen_generate(prompt)
-
-    def _imagen_generate(self, prompt: str) -> bytes:
-        """Call Imagen 3 REST endpoint."""
-        url = (
-            f"https://generativelanguage.googleapis.com/v1beta/"
-            f"models/imagen-3.0-generate-001:predict?key={self.api_key}"
-        )
+        url = f"{_GEMINI_BASE}/{_GEMINI_IMG_MODEL}:generateContent?key={self.api_key}"
         payload = {
-            "instances": [{"prompt": prompt}],
-            "parameters": {"sampleCount": 1},
+            "contents": [{"parts": parts}],
+            "generationConfig": {"responseModalities": ["IMAGE", "TEXT"]},
         }
 
         def _call():
-            resp = requests.post(url, json=payload, timeout=60)
+            resp = requests.post(url, json=payload, timeout=120)
             resp.raise_for_status()
             data = resp.json()
-            b64 = data["predictions"][0]["bytesBase64Encoded"]
-            return base64.b64decode(b64)
+            candidates = data.get("candidates", [])
+            if not candidates:
+                raise RuntimeError(f"No candidates in response: {data}")
+            for part in candidates[0]["content"]["parts"]:
+                if "inlineData" in part:
+                    return base64.b64decode(part["inlineData"]["data"])
+            raise RuntimeError("No image data in Gemini response")
 
         return self._retry(_call)
 
-    def _guided_generation(self, prompt: str, reference_image_bytes: bytes) -> bytes:
-        """Use Gemini vision model with reference image as context."""
-        import google.generativeai as genai
-        from PIL import Image as PILImage
+    # ── public API ────────────────────────────────────────────────────────────
 
-        ref_img = PILImage.open(io.BytesIO(reference_image_bytes))
-
-        model = genai.GenerativeModel("gemini-1.5-pro-vision")
-
-        def _call():
-            response = model.generate_content(
-                [prompt, ref_img],
-                generation_config={"response_mime_type": "image/png"},
-            )
-            # Extract image bytes from response
-            for part in response.parts:
-                if hasattr(part, "inline_data") and part.inline_data:
-                    return part.inline_data.data
-            # Fallback: try Imagen without reference
-            return self._imagen_generate(prompt)
-
-        try:
-            return self._retry(_call)
-        except Exception:
-            # Graceful fallback to Imagen without the reference
-            return self._imagen_generate(prompt)
-
-    # ── image editing via Gemini ──────────────────────────────────────────────
-
-    def edit_image(self, image_bytes: bytes, instruction: str) -> bytes:
-        """
-        Edit an existing image using a text instruction.
-        Returns edited image bytes.
-        """
+    def generate_image(self, prompt: str, reference_image_bytes: bytes = None) -> bytes:
+        """Generate an image from a text prompt, optionally using a reference image."""
         if not self.api_key:
             raise RuntimeError(
                 "GOOGLE_API_KEY not configured. Set it as an environment variable."
             )
+        parts = []
+        if reference_image_bytes:
+            img_b64 = base64.b64encode(reference_image_bytes).decode()
+            parts.append({"inlineData": {"mimeType": "image/jpeg", "data": img_b64}})
+        parts.append({"text": prompt})
+        return self._generate_image_rest(parts)
 
-        if not self._genai:
+    def generate_angles(
+        self,
+        prompt_base: str,
+        reference_image_bytes: bytes,
+        count: int = 4,
+    ) -> list[bytes]:
+        """Generate `count` angle variations of a product image. Returns list of image bytes."""
+        results = []
+        for i in range(min(count, len(_ANGLE_PROMPTS))):
+            angle_prompt = f"{prompt_base}, {_ANGLE_PROMPTS[i]}, product photography"
+            try:
+                img_bytes = self.generate_image(angle_prompt, reference_image_bytes)
+                results.append(img_bytes)
+            except Exception as e:
+                results.append(None)
+        return results
+
+    def edit_image(self, image_bytes: bytes, instruction: str) -> bytes:
+        """Edit an existing image using a text instruction. Returns edited image bytes."""
+        if not self.api_key:
             raise RuntimeError(
-                "google-generativeai package not installed. "
-                "Run: pip install google-generativeai"
+                "GOOGLE_API_KEY not configured. Set it as an environment variable."
             )
-
-        import google.generativeai as genai
-        from PIL import Image as PILImage
-
-        pil_img = PILImage.open(io.BytesIO(image_bytes))
-        model = genai.GenerativeModel("gemini-1.5-pro-vision")
-
-        full_instruction = (
-            f"{instruction}. Return only the edited image, no explanations."
-        )
-
-        def _call():
-            response = model.generate_content(
-                [full_instruction, pil_img],
-                generation_config={"response_mime_type": "image/png"},
-            )
-            for part in response.parts:
-                if hasattr(part, "inline_data") and part.inline_data:
-                    return part.inline_data.data
-            raise RuntimeError("No image data in Gemini response")
-
-        return self._retry(_call)
+        img_b64 = base64.b64encode(image_bytes).decode()
+        parts = [
+            {"inlineData": {"mimeType": "image/jpeg", "data": img_b64}},
+            {"text": f"{instruction}. Return only the edited image."},
+        ]
+        return self._generate_image_rest(parts)

@@ -37,6 +37,8 @@ def _init_nb_state():
         "nb_errors": 0,
         "nb_batch_result": None,
         "nb_copied_prompt": "",
+        "nb_angle_results": [],
+        "nb_angle_count": 1,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -71,6 +73,63 @@ def _show_before_after(original: Image.Image, result: Image.Image, labels=("Orig
         st.caption(f"{result.width}×{result.height}px")
 
 
+def _show_angle_grid(results: list, labels: list = None):
+    """Show multiple angle results in a 2-column grid with individual download buttons."""
+    if not results:
+        return
+    cols_per_row = 2
+    for i in range(0, len(results), cols_per_row):
+        row_results = results[i:i + cols_per_row]
+        cols = st.columns(cols_per_row)
+        for j, item in enumerate(row_results):
+            with cols[j]:
+                idx = i + j + 1
+                label = (labels[idx - 1] if labels and idx - 1 < len(labels)
+                         else f"Angle {idx}")
+                st.markdown(f"**{label}**")
+                if item is None:
+                    st.error("Generation failed")
+                else:
+                    if isinstance(item, bytes):
+                        st.image(item, use_container_width=True)
+                        st.download_button(
+                            f"⬇ Download",
+                            data=item,
+                            file_name=f"angle_{idx}.jpg",
+                            mime="image/jpeg",
+                            key=f"nb_dl_angle_{id(results)}_{idx}",
+                        )
+                    else:
+                        buf = io.BytesIO()
+                        item.convert("RGB").save(buf, format="JPEG", quality=90)
+                        st.image(item, use_container_width=True)
+                        st.download_button(
+                            f"⬇ Download",
+                            data=buf.getvalue(),
+                            file_name=f"angle_{idx}.jpg",
+                            mime="image/jpeg",
+                            key=f"nb_dl_angle_{id(results)}_{idx}",
+                        )
+
+
+def _build_angles_zip(results: list, prefix: str = "angle") -> bytes:
+    """Pack multiple image bytes/PIL Images into a ZIP and return bytes."""
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for i, item in enumerate(results):
+            if item is None:
+                continue
+            if isinstance(item, bytes):
+                img_bytes = item
+            else:
+                ib = io.BytesIO()
+                item.convert("RGB").save(ib, format="JPEG", quality=90)
+                img_bytes = ib.getvalue()
+            zf.writestr(f"{prefix}_{i + 1}.jpg", img_bytes)
+    return buf.getvalue()
+
+
 # ── API key warning ───────────────────────────────────────────────────────────
 
 def _api_warning():
@@ -80,6 +139,74 @@ def _api_warning():
         "PIL-based edits (Editor tab) still work without an API key.",
         icon="⚠️",
     )
+
+
+# ── ZIP batch helper ──────────────────────────────────────────────────────────
+
+def _process_zip_batch(zip_bytes: bytes, config: dict, engine, progress_cb=None) -> dict:
+    """Extract images from a ZIP, run AI generation on each, return results dict with zip_bytes."""
+    import zipfile as _zf
+
+    IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+    out_buf = io.BytesIO()
+    success = failed = skipped = 0
+    entries = []
+
+    with _zf.ZipFile(io.BytesIO(zip_bytes)) as zin:
+        names = [n for n in zin.namelist()
+                 if not n.startswith("__MACOSX")
+                 and any(n.lower().endswith(ext) for ext in IMG_EXTS)]
+
+    total = len(names) * config.get("angles", 1)
+
+    with _zf.ZipFile(out_buf, "w", _zf.ZIP_DEFLATED) as zout:
+        done = 0
+        for name in names:
+            with _zf.ZipFile(io.BytesIO(zip_bytes)) as zin:
+                img_bytes = zin.read(name)
+            stem = name.rsplit(".", 1)[0].replace("/", "_")
+            n_angles = config.get("angles", 1)
+
+            try:
+                img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+                ref_buf = io.BytesIO()
+                img.convert("RGB").save(ref_buf, format="JPEG", quality=90)
+                ref_bytes = ref_buf.getvalue()
+
+                mode = config.get("mode", "background")
+                bg_opt = config.get("background_option", "White")
+
+                if n_angles == 1:
+                    result_img = engine.bg_gen.replace_background(img, bg_opt, "", "")
+                    out_ib = io.BytesIO()
+                    result_img.convert("RGB").save(out_ib, format="JPEG", quality=90)
+                    zout.writestr(f"{stem}_result.jpg", out_ib.getvalue())
+                    success += 1
+                    done += 1
+                else:
+                    base_prompt = f"Product photo with {bg_opt} background"
+                    angle_results = engine.client.generate_angles(base_prompt, ref_bytes, count=n_angles)
+                    for ai, ab in enumerate(angle_results):
+                        if ab is not None:
+                            zout.writestr(f"{stem}_angle{ai + 1}.jpg", ab)
+                            success += 1
+                        else:
+                            failed += 1
+                        done += 1
+            except Exception:
+                failed += n_angles
+                done += n_angles
+            finally:
+                if progress_cb:
+                    progress_cb(done, total)
+
+    return {
+        "total": len(names),
+        "success": success,
+        "failed": failed,
+        "skipped": skipped,
+        "zip_bytes": out_buf.getvalue(),
+    }
 
 
 # ── Main render function ──────────────────────────────────────────────────────
@@ -151,6 +278,21 @@ def render_nano_banana():
     else:
         st.info("Upload an image or paste a URL to get started.")
 
+    # ── Angle count selector ──────────────────────────────────────────────────
+    st.markdown("#### 🔄 How many angles / variations to generate?")
+    angle_count = st.slider(
+        "Angles per image",
+        min_value=1, max_value=8, value=1, step=1,
+        key="nb_angle_slider",
+        help="1 = single result. 2–8 = generate multiple angle variations.",
+    )
+    st.session_state.nb_angle_count = angle_count
+    if angle_count > 1:
+        st.info(
+            f"Will generate **{angle_count} angle variations** — front, side, 3/4, back, top, "
+            "close-up, low, elevated — and offer a ZIP download."
+        )
+
     st.markdown("---")
 
     # ── Tabs ──────────────────────────────────────────────────────────────────
@@ -186,23 +328,59 @@ def render_nano_banana():
             if not img:
                 st.warning("Please upload a product image first.")
             else:
-                with st.spinner("Generating background..."):
+                n = st.session_state.nb_angle_count
+                with st.spinner(f"Generating {n} background variation(s)..."):
                     t0 = time.time()
                     try:
-                        result = engine.bg_gen.replace_background(
-                            img, bg_choice, custom_bg, product_desc_bg
-                        )
-                        elapsed = time.time() - t0
-                        st.session_state.nb_api_calls += 1
-                        st.session_state.nb_gen_time += elapsed
-                        prompt = f"Background: {bg_choice}"
-                        _set_result(result, prompt, "background")
-                        history.add("Background", img, result, prompt)
-                        st.success(f"Done in {elapsed:.1f}s")
-                        _show_before_after(img, result)
+                        if n == 1:
+                            result = engine.bg_gen.replace_background(
+                                img, bg_choice, custom_bg, product_desc_bg
+                            )
+                            elapsed = time.time() - t0
+                            st.session_state.nb_api_calls += 1
+                            st.session_state.nb_gen_time += elapsed
+                            prompt = f"Background: {bg_choice}"
+                            _set_result(result, prompt, "background")
+                            history.add("Background", img, result, prompt)
+                            st.session_state.nb_angle_results = []
+                            st.success(f"Done in {elapsed:.1f}s")
+                            _show_before_after(img, result)
+                        else:
+                            # Multi-angle: generate N variations
+                            buf = io.BytesIO()
+                            img.convert("RGB").save(buf, format="JPEG", quality=90)
+                            ref_bytes = buf.getvalue()
+                            base_prompt = (
+                                f"Product photo with {bg_choice} background"
+                                + (f", {product_desc_bg}" if product_desc_bg else "")
+                                + (f", {custom_bg}" if custom_bg else "")
+                            )
+                            results = engine.client.generate_angles(
+                                base_prompt, ref_bytes, count=n
+                            )
+                            elapsed = time.time() - t0
+                            st.session_state.nb_api_calls += n
+                            st.session_state.nb_gen_time += elapsed
+                            st.session_state.nb_angle_results = results
+                            good = sum(1 for r in results if r is not None)
+                            st.success(f"Generated {good}/{n} angles in {elapsed:.1f}s")
                     except Exception as e:
                         st.session_state.nb_errors += 1
                         st.error(f"Error: {e}")
+
+        # Show results
+        if st.session_state.nb_angle_results:
+            results = st.session_state.nb_angle_results
+            _show_angle_grid(results)
+            zip_data = _build_angles_zip(results, "bg")
+            st.download_button(
+                f"⬇ Download All {len(results)} Angles (ZIP)",
+                data=zip_data,
+                file_name="psydox_angles.zip",
+                mime="application/zip",
+                use_container_width=True,
+                key="nb_bg_zip_dl",
+            )
         elif st.session_state.nb_result and st.session_state.nb_result_mode == "background":
             _show_before_after(_get_image(), st.session_state.nb_result)
 
@@ -527,11 +705,30 @@ def render_nano_banana():
     # ── Tab 10: Batch Processing ──────────────────────────────────────────────
     with tabs[9]:
         st.markdown("### 📦 Batch Processing")
-        batch_excel = st.file_uploader(
-            "Upload Excel file (same format as Classic — STYLE_CODE, IMAGE1..IMAGE12)",
-            type=["xlsx", "xls"],
-            key="nb_batch_excel",
+
+        # Input type selector
+        batch_input_type = st.radio(
+            "Input type",
+            ["Excel file (image URLs)", "ZIP file (images)"],
+            key="nb_batch_input_type",
+            horizontal=True,
         )
+
+        if batch_input_type == "Excel file (image URLs)":
+            batch_excel = st.file_uploader(
+                "Upload Excel file (STYLE_CODE, IMAGE1..IMAGE12 columns with URLs)",
+                type=["xlsx", "xls"],
+                key="nb_batch_excel",
+            )
+            batch_zip_file = None
+        else:
+            batch_zip_file = st.file_uploader(
+                "Upload ZIP file containing images (JPG/PNG)",
+                type=["zip"],
+                key="nb_batch_zip",
+            )
+            batch_excel = None
+
         batch_mode = st.selectbox(
             "Processing Mode",
             ["background", "lifestyle", "enhance", "edit", "scene"],
@@ -542,18 +739,26 @@ def render_nano_banana():
         else:
             batch_bg = "White"
 
+        batch_angles = st.slider(
+            "Angles per image",
+            min_value=1, max_value=8, value=1,
+            key="nb_batch_angles",
+            help="How many angle variations to generate for each input image",
+        )
+        if batch_angles > 1:
+            st.info(f"Will generate {batch_angles} angle variations per image → output ZIP will have (images × {batch_angles}) files.")
+
+        have_input = batch_excel is not None or batch_zip_file is not None
+
         if st.button("▶ Run Batch", key="nb_batch_btn", type="primary"):
-            if not batch_excel:
-                st.warning("Please upload an Excel file.")
+            if not have_input:
+                st.warning("Please upload an input file.")
             elif not GOOGLE_API_KEY and batch_mode != "edit":
                 _api_warning()
             else:
-                import tempfile, pathlib
-                with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tf:
-                    tf.write(batch_excel.getvalue())
-                    excel_path = tf.name
+                import tempfile, pathlib, zipfile as _zf
 
-                config = {"mode": batch_mode}
+                config = {"mode": batch_mode, "angles": batch_angles}
                 if batch_mode == "background":
                     config["background_option"] = batch_bg
 
@@ -567,13 +772,22 @@ def render_nano_banana():
 
                 with st.spinner("Running batch..."):
                     try:
-                        results = engine.process_batch(excel_path, config, _progress)
+                        if batch_excel is not None:
+                            with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tf:
+                                tf.write(batch_excel.getvalue())
+                                excel_path = tf.name
+                            results = engine.process_batch(excel_path, config, _progress)
+                        else:
+                            # ZIP input: extract images and process each
+                            results = _process_zip_batch(
+                                batch_zip_file.getvalue(), config, engine, _progress
+                            )
                         st.session_state.nb_batch_result = results
                         st.success(
                             f"Batch complete! "
-                            f"✓ {results.get('success',0)} | "
-                            f"✗ {results.get('failed',0)} | "
-                            f"⚠ {results.get('skipped',0)}"
+                            f"✓ {results.get('success', 0)} | "
+                            f"✗ {results.get('failed', 0)} | "
+                            f"⚠ {results.get('skipped', 0)}"
                         )
                     except Exception as e:
                         st.error(f"Batch error: {e}")

@@ -168,15 +168,34 @@ class NanoBananaEngine:
                         progress_cb(i + 1, results["total"])
                     continue
 
+                n_angles = config.get("angles", 1)
                 # Process first image (or all, configurable)
                 for url in img_urls[:1]:
                     try:
                         resp = requests.get(url, timeout=30)
                         resp.raise_for_status()
                         src_img = Image.open(io.BytesIO(resp.content)).convert("RGB")
-                        result_img = self.process_single(src_img, config)
-                        processed_images.append((f"{style_code}.jpg", result_img))
-                        results["success"] += 1
+                        if n_angles <= 1:
+                            result_img = self.process_single(src_img, config)
+                            processed_images.append((f"{style_code}.jpg", result_img))
+                            results["success"] += 1
+                        else:
+                            ref_buf = io.BytesIO()
+                            src_img.convert("RGB").save(ref_buf, format="JPEG", quality=90)
+                            bg_opt = config.get("background_option", "White")
+                            base_prompt = f"Product photo with {bg_opt} background"
+                            angle_bytes_list = self.client.generate_angles(
+                                base_prompt, ref_buf.getvalue(), count=n_angles
+                            )
+                            for ai, ab in enumerate(angle_bytes_list):
+                                if ab is not None:
+                                    angle_img = Image.open(io.BytesIO(ab)).convert("RGB")
+                                    processed_images.append(
+                                        (f"{style_code}_angle{ai + 1}.jpg", angle_img)
+                                    )
+                                    results["success"] += 1
+                                else:
+                                    results["failed"] += 1
                     except Exception:
                         results["failed"] += 1
 
