@@ -39,6 +39,7 @@ def _init_nb_state():
         "nb_copied_prompt": "",
         "nb_angle_results": [],
         "nb_angle_count": 1,
+        "nb_packshot_results": [],
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -128,6 +129,90 @@ def _build_angles_zip(results: list, prefix: str = "angle") -> bytes:
                 img_bytes = ib.getvalue()
             zf.writestr(f"{prefix}_{i + 1}.jpg", img_bytes)
     return buf.getvalue()
+
+
+# ── Packshot helpers ─────────────────────────────────────────────────────────
+
+def _show_packshot_grid(results: list, original_img=None):
+    """
+    Display a grid of AI-generated packshot angles.
+    results: list of {"name", "label", "key", "bytes"|None, "error"|None}
+    """
+    if not results:
+        return
+
+    if original_img:
+        st.markdown("**Original**")
+        st.image(original_img, width=160)
+        st.markdown("**Generated Angles**")
+
+    cols_per_row = 2
+    for i in range(0, len(results), cols_per_row):
+        row = results[i:i + cols_per_row]
+        cols = st.columns(cols_per_row)
+        for j, item in enumerate(row):
+            with cols[j]:
+                st.markdown(f"**{item['name']}**")
+                if item.get("bytes"):
+                    st.image(item["bytes"], use_container_width=True)
+                    st.download_button(
+                        f"⬇ {item['label']}",
+                        data=item["bytes"],
+                        file_name=f"packshot_{item['key']}.jpg",
+                        mime="image/jpeg",
+                        key=f"nb_dl_ps_{item['key']}_{id(results)}",
+                    )
+                else:
+                    err = item.get("error", "Generation failed")
+                    st.error(f"Failed: {err[:120]}")
+
+
+def _build_packshot_zip(results: list) -> bytes:
+    """Pack all successful packshot angles into a single ZIP."""
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for item in results:
+            if item.get("bytes"):
+                zf.writestr(f"packshot_{item['key']}.jpg", item["bytes"])
+    return buf.getvalue()
+
+
+def _build_contact_sheet(results: list, cols: int = 3) -> bytes:
+    """Composite all successful angles into one contact-sheet JPEG."""
+    from PIL import Image as _PIL, ImageDraw
+
+    THUMB = 400
+    MARGIN = 20
+    LABEL_H = 32
+
+    good = [r for r in results if r.get("bytes")]
+    if not good:
+        return b""
+
+    rows = (len(good) + cols - 1) // cols
+    w = cols * (THUMB + MARGIN) + MARGIN
+    h = rows * (THUMB + LABEL_H + MARGIN) + MARGIN
+    sheet = _PIL.new("RGB", (w, h), (255, 255, 255))
+    draw = ImageDraw.Draw(sheet)
+
+    for idx, item in enumerate(good):
+        col = idx % cols
+        row = idx // cols
+        x = MARGIN + col * (THUMB + MARGIN)
+        y = MARGIN + row * (THUMB + LABEL_H + MARGIN)
+        try:
+            thumb = _PIL.open(io.BytesIO(item["bytes"])).convert("RGB")
+            thumb.thumbnail((THUMB, THUMB), _PIL.LANCZOS)
+            ox = x + (THUMB - thumb.width) // 2
+            sheet.paste(thumb, (ox, y))
+        except Exception:
+            pass
+        draw.text((x, y + THUMB + 4), item["name"], fill=(60, 60, 60))
+
+    out = io.BytesIO()
+    sheet.save(out, format="JPEG", quality=90)
+    return out.getvalue()
 
 
 # ── API key warning ───────────────────────────────────────────────────────────
@@ -288,9 +373,12 @@ def render_nano_banana():
     )
     st.session_state.nb_angle_count = angle_count
     if angle_count > 1:
+        from .api_client import ANGLE_VIEWS as _AV
+        _labels = " · ".join(a["label"] for a in _AV[:angle_count])
         st.info(
-            f"Will generate **{angle_count} background variations** — white, grey, beige, "
-            "blue-grey, green, dark, cream etc. — background removed automatically, ZIP download included."
+            f"Will generate **{angle_count} packshot angles** via AI: {_labels}. "
+            "Each angle is an independent generation job. "
+            "ZIP + contact sheet download included."
         )
 
     st.markdown("---")
@@ -323,16 +411,21 @@ def render_nano_banana():
             custom_bg = st.text_area("Custom Background Prompt", key="nb_bg_custom")
         product_desc_bg = st.text_input("Product Description (optional)", key="nb_pd_bg",
                                          placeholder="e.g. Nike Air Max sneaker")
-        if st.button("🎨 Replace Background", key="nb_bg_btn", type="primary"):
+        btn_label = ("🎨 Replace Background"
+                     if st.session_state.nb_angle_count == 1
+                     else f"📸 Generate {st.session_state.nb_angle_count} Packshot Angles")
+        if st.button(btn_label, key="nb_bg_btn", type="primary"):
             img = _get_image()
             if not img:
                 st.warning("Please upload a product image first.")
             else:
                 n = st.session_state.nb_angle_count
-                with st.spinner(f"Generating {n} background variation(s)..."):
-                    t0 = time.time()
-                    try:
-                        if n == 1:
+                t0 = time.time()
+
+                if n == 1:
+                    # ── Single background replacement (unchanged) ──────────
+                    with st.spinner("Replacing background..."):
+                        try:
                             result = engine.bg_gen.replace_background(
                                 img, bg_choice, custom_bg, product_desc_bg
                             )
@@ -343,42 +436,142 @@ def render_nano_banana():
                             _set_result(result, prompt, "background")
                             history.add("Background", img, result, prompt)
                             st.session_state.nb_angle_results = []
+                            st.session_state.nb_packshot_results = []
                             st.success(f"Done in {elapsed:.1f}s")
                             _show_before_after(img, result)
-                        else:
-                            # Multi-angle: PIL background variations
-                            buf = io.BytesIO()
-                            img.convert("RGB").save(buf, format="JPEG", quality=90)
-                            ref_bytes = buf.getvalue()
-                            results = engine.client.generate_angles(
-                                "", ref_bytes, count=n
-                            )
-                            elapsed = time.time() - t0
-                            st.session_state.nb_gen_time += elapsed
-                            st.session_state.nb_angle_results = results
-                            good = sum(1 for r in results if r is not None)
-                            st.success(f"Generated {good}/{n} background variations in {elapsed:.1f}s")
-                    except Exception as e:
-                        st.session_state.nb_errors += 1
-                        st.error(f"Error: {e}")
+                        except Exception as e:
+                            st.session_state.nb_errors += 1
+                            st.error(f"Error: {e}")
 
-        # Show results
-        if st.session_state.nb_angle_results:
-            from .api_client import _PIL_ANGLE_STYLES
-            results = st.session_state.nb_angle_results
-            labels = [s["label"] for s in _PIL_ANGLE_STYLES[:len(results)]]
-            _show_angle_grid(results, labels)
-            zip_data = _build_angles_zip(results, "bg")
-            st.download_button(
-                f"⬇ Download All {len(results)} Angles (ZIP)",
-                data=zip_data,
-                file_name="psydox_angles.zip",
-                mime="application/zip",
-                use_container_width=True,
-                key="nb_bg_zip_dl",
-            )
-        elif st.session_state.nb_result and st.session_state.nb_result_mode == "background":
-            _show_before_after(_get_image(), st.session_state.nb_result)
+                else:
+                    # ── Multi-angle packshot generation (AI, N separate calls) ─
+                    from .api_client import ANGLE_VIEWS as _AV
+                    buf = io.BytesIO()
+                    img.convert("RGB").save(buf, format="JPEG", quality=90)
+                    ref_bytes = buf.getvalue()
+
+                    selected_angles = _AV[:n]
+                    packshot_results = []
+                    progress_placeholder = st.empty()
+
+                    with st.status(
+                        f"Generating {n} packshot angles — each is an independent AI job...",
+                        expanded=True,
+                    ) as status_box:
+                        for i, angle in enumerate(selected_angles):
+                            status_box.write(f"⏳ {angle['name']} ({i+1}/{n})...")
+                            from .api_client import _build_angle_prompt
+                            prompt = _build_angle_prompt(product_desc_bg, angle)
+                            try:
+                                img_bytes = engine.client.generate_image(
+                                    prompt, ref_bytes
+                                )
+                                packshot_results.append({
+                                    "name":  angle["name"],
+                                    "label": angle["label"],
+                                    "key":   angle["key"],
+                                    "bytes": img_bytes,
+                                    "error": None,
+                                })
+                                status_box.write(f"✅ {angle['name']} — done")
+                                # Save each angle to history individually
+                                from PIL import Image as _PIL
+                                result_img = _PIL.open(io.BytesIO(img_bytes))
+                                history.add(
+                                    f"Packshot: {angle['name']}",
+                                    img, result_img,
+                                    f"{angle['name']} — {product_desc_bg}",
+                                    "Gemini",
+                                )
+                                st.session_state.nb_api_calls += 1
+                            except Exception as exc:
+                                err = str(exc)
+                                packshot_results.append({
+                                    "name":  angle["name"],
+                                    "label": angle["label"],
+                                    "key":   angle["key"],
+                                    "bytes": None,
+                                    "error": err,
+                                })
+                                st.session_state.nb_errors += 1
+                                status_box.write(
+                                    f"❌ {angle['name']} — {err[:80]}"
+                                )
+
+                        elapsed = time.time() - t0
+                        st.session_state.nb_gen_time += elapsed
+                        good = sum(1 for r in packshot_results if r.get("bytes"))
+                        status_box.update(
+                            label=f"Complete: {good}/{n} angles generated in {elapsed:.1f}s",
+                            state="complete" if good == n else "error",
+                        )
+
+                    st.session_state.nb_packshot_results = packshot_results
+                    st.session_state.nb_angle_results = []
+
+        # ── Show single-BG result ─────────────────────────────────────────
+        if st.session_state.nb_result and st.session_state.nb_result_mode == "background":
+            if not st.session_state.get("nb_packshot_results"):
+                _show_before_after(_get_image(), st.session_state.nb_result)
+
+        # ── Show packshot grid ────────────────────────────────────────────
+        if st.session_state.get("nb_packshot_results"):
+            ps_results = st.session_state.nb_packshot_results
+            good_n = sum(1 for r in ps_results if r.get("bytes"))
+
+            st.markdown(f"### 📸 {good_n}/{len(ps_results)} Packshot Angles")
+            _show_packshot_grid(ps_results, _get_image())
+
+            if good_n > 0:
+                st.markdown("#### ⬇ Export")
+                ec1, ec2, ec3 = st.columns(3)
+                with ec1:
+                    zip_data = _build_packshot_zip(ps_results)
+                    st.download_button(
+                        f"ZIP ({good_n} images)",
+                        data=zip_data,
+                        file_name="psydox_packshot.zip",
+                        mime="application/zip",
+                        use_container_width=True,
+                        key="nb_ps_zip_dl",
+                    )
+                with ec2:
+                    sheet_bytes = _build_contact_sheet(ps_results)
+                    if sheet_bytes:
+                        st.download_button(
+                            "Contact Sheet (JPG)",
+                            data=sheet_bytes,
+                            file_name="psydox_contact_sheet.jpg",
+                            mime="image/jpeg",
+                            use_container_width=True,
+                            key="nb_ps_sheet_dl",
+                        )
+                with ec3:
+                    # PDF: PIL can save multi-page JPEG as PDF
+                    try:
+                        from PIL import Image as _PIL
+                        pdf_imgs = []
+                        for r in ps_results:
+                            if r.get("bytes"):
+                                pdf_imgs.append(
+                                    _PIL.open(io.BytesIO(r["bytes"])).convert("RGB")
+                                )
+                        if pdf_imgs:
+                            pdf_buf = io.BytesIO()
+                            pdf_imgs[0].save(
+                                pdf_buf, format="PDF", save_all=True,
+                                append_images=pdf_imgs[1:],
+                            )
+                            st.download_button(
+                                "PDF (all angles)",
+                                data=pdf_buf.getvalue(),
+                                file_name="psydox_packshot.pdf",
+                                mime="application/pdf",
+                                use_container_width=True,
+                                key="nb_ps_pdf_dl",
+                            )
+                    except Exception:
+                        pass
 
     # ── Tab 2: Lifestyle ──────────────────────────────────────────────────────
     with tabs[1]:

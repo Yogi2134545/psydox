@@ -41,7 +41,79 @@ _IMAGE_MODELS_OFFICIAL = [
     "gemini-2.5-flash-image",    # current GA (hint only)
 ]
 
-# PIL-based background colours for angle/variation generation (no API required)
+# ── Packshot angle definitions (8 views) ─────────────────────────────────────
+# Each entry defines one photographic angle for AI-based packshot generation.
+# The "desc" is embedded directly in the generation prompt.
+ANGLE_VIEWS = [
+    {
+        "name":  "Front View",
+        "label": "Front",
+        "key":   "front",
+        "desc":  "straight-on front view, product centered, camera at eye level facing directly toward the product",
+    },
+    {
+        "name":  "Back View",
+        "label": "Back",
+        "key":   "back",
+        "desc":  "straight-on rear view, product centered, camera at eye level facing directly at the back of the product",
+    },
+    {
+        "name":  "Left Side",
+        "label": "Left",
+        "key":   "left",
+        "desc":  "direct left-side profile, camera at exactly 90 degrees to the left of center, eye level",
+    },
+    {
+        "name":  "Right Side",
+        "label": "Right",
+        "key":   "right",
+        "desc":  "direct right-side profile, camera at exactly 90 degrees to the right of center, eye level",
+    },
+    {
+        "name":  "45° Front-Left",
+        "label": "45°L",
+        "key":   "45_front_left",
+        "desc":  "45-degree front-left three-quarter angle, camera slightly elevated, showing front and left side simultaneously",
+    },
+    {
+        "name":  "45° Front-Right",
+        "label": "45°R",
+        "key":   "45_front_right",
+        "desc":  "45-degree front-right three-quarter angle, camera slightly elevated, showing front and right side simultaneously",
+    },
+    {
+        "name":  "Top / Flat Lay",
+        "label": "Top",
+        "key":   "top",
+        "desc":  "overhead top-down flat lay, camera directly above looking straight down at the product on a flat surface",
+    },
+    {
+        "name":  "Three-Quarter",
+        "label": "3/4",
+        "key":   "three_quarter",
+        "desc":  "classic three-quarter angle, 45 degrees horizontal and 30 degrees elevated, dynamic hero composition",
+    },
+]
+
+# ── Angle prompt builder ──────────────────────────────────────────────────────
+
+def _build_angle_prompt(product_desc: str, angle: dict) -> str:
+    """Build an angle-specific generation prompt that preserves all product attributes."""
+    desc_clause = f" of the {product_desc.strip()}" if product_desc.strip() else ""
+    return (
+        f"Create a photorealistic commercial product photograph{desc_clause}. "
+        f"Camera position: {angle['desc']}. "
+        "Preserve exactly from the reference image: same product design, same colorway, "
+        "same materials and textures, same logos and branding, same proportions and scale. "
+        "Studio: pure white background (#FFFFFF), soft diffused studio lighting from above, "
+        "natural drop shadow beneath the product, no props, no reflections, "
+        "product fills approximately 80% of the frame. "
+        "Quality: 8K commercial product photography, razor-sharp focus, "
+        "shot on a professional medium-format camera."
+    )
+
+
+# PIL-based background colours (kept for background replacement tab, n=1 path)
 _PIL_ANGLE_STYLES = [
     {"bg": (255, 255, 255), "label": "White background"},
     {"bg": (240, 240, 240), "label": "Light grey"},
@@ -454,6 +526,64 @@ class GeminiClient:
     def edit_image(self, image_bytes: bytes, instruction: str) -> bytes:
         # generate_image handles perf tracking and error logging
         return self.generate_image(instruction, reference_image_bytes=image_bytes)
+
+    def generate_packshot_angles(
+        self,
+        product_desc: str,
+        reference_image_bytes: bytes,
+        count: int = 7,
+    ) -> list:
+        """
+        Generate `count` distinct photographic angle views of the product via AI.
+
+        Makes `count` independent API calls — one per angle — each with its own
+        angle-specific prompt that instructs the model to render the product from
+        Front, Back, Left, Right, 45°L, 45°R, Top, 3/4 (in order).
+
+        Returns a list of dicts, one per angle, in the same order as ANGLE_VIEWS:
+            {"name": str, "label": str, "key": str,
+             "bytes": bytes | None, "error": str | None}
+
+        Never raises — individual angle failures are captured in "error".
+        """
+        if not self.api_key:
+            raise RuntimeError("GOOGLE_API_KEY not set — cannot generate angles.")
+        if not self._sdk_ok:
+            raise RuntimeError(
+                "google-genai SDK not installed — add 'google-genai' to requirements.txt."
+            )
+
+        selected = ANGLE_VIEWS[:min(count, len(ANGLE_VIEWS))]
+        results = []
+
+        for angle in selected:
+            prompt = _build_angle_prompt(product_desc, angle)
+            _log.info(
+                "packshot_angle  name=%s  prompt=%r",
+                angle["name"], prompt[:80],
+            )
+            try:
+                img_bytes = self.generate_image(prompt, reference_image_bytes)
+                results.append({
+                    "name":  angle["name"],
+                    "label": angle["label"],
+                    "key":   angle["key"],
+                    "bytes": img_bytes,
+                    "error": None,
+                })
+                _log.info("packshot_angle OK  name=%s  bytes=%d", angle["name"], len(img_bytes))
+            except Exception as exc:
+                err = str(exc)
+                _log.error("packshot_angle FAILED  name=%s  error=%s", angle["name"], err)
+                results.append({
+                    "name":  angle["name"],
+                    "label": angle["label"],
+                    "key":   angle["key"],
+                    "bytes": None,
+                    "error": err,
+                })
+
+        return results
 
     def generate_angles(self, prompt_base: str, reference_image_bytes: bytes,
                         count: int = 4) -> list:
