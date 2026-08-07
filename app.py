@@ -309,17 +309,13 @@ def _poll():
     if j.get("running"):
         done    = j.get("done",    0)
         total   = j.get("total",   0)
-        active  = j.get("active",  0)
         started = j.get("started", 0)
-        # Progress bar moves on STARTED (never stalls) — done shown separately
+        active  = j.get("active",  0)
         pct = started / total if total > 0 else 0
-        st.progress(pct, text=f"⚡ {started} / {total} started — {done} completed — {int(pct*100)}%")
-        cols = st.columns(3)
-        cols[0].metric("✅ Completed", done)
-        cols[1].metric("⬇️ Downloading now", active)
-        cols[2].metric("📋 In queue", max(0, total - started))
+        st.progress(pct, text=f"⚡  {started} / {total} started  —  {done} completed  —  {int(pct*100)}%")
+        st.markdown(f"⬇️ **{active}** downloading now &nbsp;&nbsp;|&nbsp;&nbsp; 📋 **{max(0, total - started)}** in queue",
+                    unsafe_allow_html=True)
     elif (j.get("results") or j.get("error")) and not j.get("_shown"):
-        # Job just finished — trigger ONE full rerun to show results, then stop
         j["_shown"] = True
         st.rerun(scope="app")
 
