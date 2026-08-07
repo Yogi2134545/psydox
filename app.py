@@ -282,7 +282,16 @@ if run_btn and have_file and not is_run:
         USE_REMBG=False, BG_GREY=int(bggrey), BG_RGB=bgrgb, PACK_MODE=pack,
     )
 
-    _JOBS[job_id] = {"running": True, "done": 0, "total": 0,
+    # Always wipe previous output for this job so stale results are never served
+    old_dir = _job_dir(job_id)
+    if old_dir.exists():
+        try:
+            shutil.rmtree(str(old_dir), ignore_errors=True)
+        except Exception:
+            pass
+    old_dir.mkdir(parents=True, exist_ok=True)
+
+    _JOBS[job_id] = {"running": True, "done": 0, "total": 0, "started": 0, "active": 0,
                      "results": None, "error": None, "zip_path": None, "previews": []}
     _flush_job(job_id)
 
@@ -333,11 +342,17 @@ if job.get("error"):
 
 elif job.get("results"):
     res = job["results"]
+    total   = res.get("total",   0)
+    success = res.get("success", 0)
+    failed  = res.get("failed",  0)
+    skipped = res.get("skipped", 0)
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total",       res.get("total",   0))
-    c2.metric("✓ Processed", res.get("success", 0))
-    c3.metric("✗ Failed",    res.get("failed",  0))
-    c4.metric("⚠ Skipped",   res.get("skipped", 0))
+    c1.metric("Total",       total)
+    c2.metric("✓ Processed", success)
+    c3.metric("✗ Failed DL", failed)
+    c4.metric("⚠ Skipped",   skipped)
+    if failed > 0 or skipped > 0:
+        st.warning(f"⚠️ {failed} images failed to download, {skipped} skipped. Only successful images are in the ZIP.")
 
     # Switch URL to ?zip= once done
     if job_id and st.query_params.get("zip") != job_id:
