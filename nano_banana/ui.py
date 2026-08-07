@@ -139,7 +139,10 @@ def _show_packshot_grid(results: list, original_img=None):
     results: list of {"name", "label", "key", "bytes"|None, "error"|None}
     """
     if not results:
+        st.warning("[DBG-9b] _show_packshot_grid called with EMPTY results list")
         return
+
+    st.caption(f"[DBG-9b] _show_packshot_grid: rendering {len(results)} items")
 
     if original_img:
         st.markdown("**Original**")
@@ -452,7 +455,17 @@ def render_nano_banana():
 
                     selected_angles = _AV[:n]
                     packshot_results = []
-                    progress_placeholder = st.empty()
+
+                    # ── DEBUG PANEL ──────────────────────────────────────────
+                    dbg = st.expander("🔍 Debug Log (expand to trace execution)", expanded=True)
+                    dbg.write(f"**[DBG-1] Selected angles: {n}**")
+                    dbg.write(f"[DBG-1] Angle names: {[a['name'] for a in selected_angles]}")
+                    dbg.write(f"[DBG-2] Jobs to create: {len(selected_angles)}")
+                    dbg.write(f"[DBG-2] ref_bytes size: {len(ref_bytes)} bytes")
+                    dbg.write(f"[DBG-2] engine.client type: {type(engine.client).__name__}")
+                    dbg.write(f"[DBG-2] engine.client._sdk_ok: {engine.client._sdk_ok}")
+                    dbg.write(f"[DBG-2] engine.client.api_key set: {bool(engine.client.api_key)}")
+                    # ── END DEBUG PANEL ──────────────────────────────────────
 
                     with st.status(
                         f"Generating {n} packshot angles — each is an independent AI job...",
@@ -460,12 +473,17 @@ def render_nano_banana():
                     ) as status_box:
                         for i, angle in enumerate(selected_angles):
                             status_box.write(f"⏳ {angle['name']} ({i+1}/{n})...")
+                            dbg.write(f"---")
+                            dbg.write(f"**[DBG-3] API Call #{i+1}/{n}: {angle['name']}**")
                             from .api_client import _build_angle_prompt
                             prompt = _build_angle_prompt(product_desc_bg, angle)
+                            dbg.write(f"[DBG-4] Prompt #{i+1}: {prompt[:120]}...")
                             try:
                                 img_bytes = engine.client.generate_image(
                                     prompt, ref_bytes
                                 )
+                                bytes_len = len(img_bytes) if img_bytes else 0
+                                dbg.write(f"**[DBG-5] ✅ Response #{i+1}: {bytes_len} bytes returned**")
                                 packshot_results.append({
                                     "name":  angle["name"],
                                     "label": angle["label"],
@@ -473,6 +491,7 @@ def render_nano_banana():
                                     "bytes": img_bytes,
                                     "error": None,
                                 })
+                                dbg.write(f"[DBG-7] packshot_results length after append: {len(packshot_results)}")
                                 status_box.write(f"✅ {angle['name']} — done")
                                 # Save each angle to history individually
                                 from PIL import Image as _PIL
@@ -486,6 +505,7 @@ def render_nano_banana():
                                 st.session_state.nb_api_calls += 1
                             except Exception as exc:
                                 err = str(exc)
+                                dbg.write(f"**[DBG-5] ❌ Response #{i+1}: EXCEPTION — {err[:200]}**")
                                 packshot_results.append({
                                     "name":  angle["name"],
                                     "label": angle["label"],
@@ -493,6 +513,7 @@ def render_nano_banana():
                                     "bytes": None,
                                     "error": err,
                                 })
+                                dbg.write(f"[DBG-7] packshot_results length after append: {len(packshot_results)}")
                                 st.session_state.nb_errors += 1
                                 status_box.write(
                                     f"❌ {angle['name']} — {err[:80]}"
@@ -501,6 +522,10 @@ def render_nano_banana():
                         elapsed = time.time() - t0
                         st.session_state.nb_gen_time += elapsed
                         good = sum(1 for r in packshot_results if r.get("bytes"))
+                        dbg.write(f"---")
+                        dbg.write(f"**[DBG-6] Loop finished. Total results: {len(packshot_results)}**")
+                        dbg.write(f"**[DBG-6] Results with bytes (images): {good}**")
+                        dbg.write(f"**[DBG-6] Results without bytes (failures): {len(packshot_results) - good}**")
                         status_box.update(
                             label=f"Complete: {good}/{n} angles generated in {elapsed:.1f}s",
                             state="complete" if good == n else "error",
@@ -508,6 +533,7 @@ def render_nano_banana():
 
                     st.session_state.nb_packshot_results = packshot_results
                     st.session_state.nb_angle_results = []
+                    dbg.write(f"**[DBG-8] Session state nb_packshot_results length: {len(st.session_state.nb_packshot_results)}**")
 
         # ── Show single-BG result ─────────────────────────────────────────
         if st.session_state.nb_result and st.session_state.nb_result_mode == "background":
@@ -518,6 +544,21 @@ def render_nano_banana():
         if st.session_state.get("nb_packshot_results"):
             ps_results = st.session_state.nb_packshot_results
             good_n = sum(1 for r in ps_results if r.get("bytes"))
+
+            # ── DEBUG ────────────────────────────────────────────────────
+            st.info(
+                f"[DBG-9] Rendering gallery: "
+                f"total={len(ps_results)} | with_bytes={good_n} | "
+                f"without_bytes={len(ps_results)-good_n}"
+            )
+            for _di, _dr in enumerate(ps_results):
+                _blen = len(_dr.get("bytes") or b"")
+                st.caption(
+                    f"[DBG-9] item[{_di}] name={_dr['name']} "
+                    f"bytes={'YES ('+str(_blen)+')' if _dr.get('bytes') else 'NO'} "
+                    f"error={str(_dr.get('error',''))[:80] or 'none'}"
+                )
+            # ── END DEBUG ────────────────────────────────────────────────
 
             st.markdown(f"### 📸 {good_n}/{len(ps_results)} Packshot Angles")
             _show_packshot_grid(ps_results, _get_image())
