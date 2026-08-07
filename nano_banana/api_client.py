@@ -24,6 +24,7 @@ import json
 import logging
 import platform
 import importlib.metadata
+import traceback
 
 import requests
 
@@ -33,11 +34,11 @@ logging.basicConfig(stream=sys.stdout, level=logging.INFO,
                     format="[NanoBanana] %(levelname)s %(message)s")
 _log = logging.getLogger("nano_banana.api_client")
 
-# ── Official image-capable model list (newest first) ─────────────────────────
-# Source: https://ai.google.dev/gemini-api/docs/image-generation (checked 2026-08-07)
+# ── Fallback hint list — NOT the source of truth for model discovery ──────────
+# Actual discovery is done dynamically via diagnostics.discover_image_models().
 _IMAGE_MODELS_OFFICIAL = [
-    "gemini-3.1-flash-image",    # latest GA
-    "gemini-2.5-flash-image",    # current GA
+    "gemini-3.1-flash-image",    # latest GA (hint only)
+    "gemini-2.5-flash-image",    # current GA (hint only)
 ]
 
 # PIL-based background colours for angle/variation generation (no API required)
@@ -65,10 +66,12 @@ def _pkg_version(name: str) -> str:
 def get_versions() -> dict:
     return {
         "python":              platform.python_version(),
+        "os":                  platform.system() + " " + platform.release(),
         "google-genai":        _pkg_version("google-genai"),
         "google-generativeai": _pkg_version("google-generativeai"),
         "requests":            _pkg_version("requests"),
         "Pillow":              _pkg_version("Pillow"),
+        "rembg":               _pkg_version("rembg"),
     }
 
 
@@ -82,6 +85,13 @@ class GeminiClient:
         self._types = None
         self._sdk_ok = False
         self._active_model: str | None = None
+        self._perf: dict = {
+            "requests":   0,
+            "errors":     0,
+            "retries":    0,
+            "total_time": 0.0,
+            "timings":    [],
+        }
         self._init_sdk()
 
     # ── SDK init ──────────────────────────────────────────────────────────────
@@ -122,13 +132,30 @@ class GeminiClient:
 
     def find_image_model(self) -> str | None:
         """
-        Return the first model from the official list that exists for this key.
-        Tries each name against the API; skips 404s.
+        Dynamically discover image-capable models for this API key via the
+        diagnostics module, then confirm the first one responds 200.
+        Falls back to the hint list if dynamic discovery returns nothing.
+        Caches the result in self._active_model.
         """
         if self._active_model:
             return self._active_model
 
-        for name in _IMAGE_MODELS_OFFICIAL:
+        if not self.api_key:
+            return None
+
+        from .diagnostics import discover_image_models
+
+        candidates = discover_image_models(self.api_key)
+
+        if not candidates:
+            _log.warning(
+                "Dynamic discovery found no image models — "
+                "falling back to hint list: %s",
+                _IMAGE_MODELS_OFFICIAL,
+            )
+            candidates = _IMAGE_MODELS_OFFICIAL
+
+        for name in candidates:
             url = (f"https://generativelanguage.googleapis.com/v1beta/models/{name}"
                    f"?key={self.api_key}")
             try:
@@ -137,18 +164,23 @@ class GeminiClient:
                     _log.info("Image model confirmed available: %s", name)
                     self._active_model = name
                     return name
-                _log.info("Model %s → %s", name, resp.status_code)
+                _log.info("Model %s → HTTP %s", name, resp.status_code)
             except Exception as e:
                 _log.warning("Model probe %s failed: %s", name, e)
 
         _log.error(
-            "No official image generation model is available for this API key.\n"
-            "Checked: %s\n"
-            "Your key may not have image generation enabled. "
-            "Visit https://aistudio.google.com to check model access.",
+            "No image generation model is available for this API key.\n"
+            "Dynamic discovery returned: %s\n"
+            "Hint list checked: %s\n"
+            "Ensure image generation is enabled at https://aistudio.google.com",
+            candidates,
             _IMAGE_MODELS_OFFICIAL,
         )
-        return None
+        raise RuntimeError(
+            "No image-generation model is available for this API key.\n"
+            f"Dynamic discovery checked: {candidates}\n"
+            "Ensure image generation is enabled at https://aistudio.google.com"
+        )
 
     # ── Diagnostics ───────────────────────────────────────────────────────────
 
@@ -189,16 +221,16 @@ class GeminiClient:
         report["available_models"] = [m.get("name", "") for m in all_models]
 
         # Find image model
-        model = self.find_image_model()
+        model = None
+        try:
+            model = self.find_image_model()
+        except RuntimeError as _model_err:
+            report["errors"].append(str(_model_err))
+
         report["image_model_found"] = model
         report["model_compatible"] = model is not None
 
         if model is None:
-            report["errors"].append(
-                f"No image-generation model available for this key. "
-                f"Checked: {_IMAGE_MODELS_OFFICIAL}. "
-                f"Ensure Imagen/image-generation is enabled at https://aistudio.google.com"
-            )
             return report
 
         # Check whether the model endpoint says it supports generateContent
@@ -242,7 +274,11 @@ class GeminiClient:
         Send a minimal image generation request and report pass/fail with full detail.
         Returns {"success": bool, "model": str, "error": str|None, "response_keys": list}
         """
-        model = model or self.find_image_model()
+        if not model:
+            try:
+                model = self.find_image_model()
+            except RuntimeError as _e:
+                return {"success": False, "model": None, "error": str(_e)}
         if not model:
             return {"success": False, "model": None,
                     "error": "No image-capable model found for this API key"}
@@ -306,6 +342,21 @@ class GeminiClient:
 
     # ── Public generate API ───────────────────────────────────────────────────
 
+    def get_perf_metrics(self) -> dict:
+        """Return current performance statistics."""
+        reqs = self._perf["requests"]
+        errs = self._perf["errors"]
+        timings = self._perf["timings"]
+        avg_time = (sum(timings) / len(timings)) if timings else 0.0
+        return {
+            "requests":   reqs,
+            "errors":     errs,
+            "retries":    self._perf["retries"],
+            "error_rate": round((errs / reqs * 100) if reqs else 0.0, 1),
+            "avg_time":   round(avg_time, 2),
+            "total_time": round(self._perf["total_time"], 2),
+        }
+
     def generate_image(self, prompt: str, reference_image_bytes: bytes = None) -> bytes:
         if not self.api_key:
             raise RuntimeError("GOOGLE_API_KEY not set.")
@@ -315,13 +366,6 @@ class GeminiClient:
             )
 
         model = self.find_image_model()
-        if not model:
-            raise RuntimeError(
-                f"No image-generation model available for this API key.\n"
-                f"Checked official models: {_IMAGE_MODELS_OFFICIAL}\n"
-                f"Your key may not have image generation enabled.\n"
-                f"Visit https://aistudio.google.com to enable it."
-            )
 
         _log.info("generate_image  model=%s  prompt=%r  has_ref=%s",
                   model, prompt[:80], reference_image_bytes is not None)
@@ -333,6 +377,9 @@ class GeminiClient:
             parts.append(pil_img)
         parts.append(prompt)
 
+        self._perf["requests"] += 1
+        t_start = time.time()
+
         try:
             response = self._sdk.models.generate_content(
                 model=model,
@@ -342,10 +389,31 @@ class GeminiClient:
                 ),
             )
         except Exception as e:
+            elapsed = time.time() - t_start
+            self._perf["errors"] += 1
+            self._perf["total_time"] += elapsed
+            self._perf["timings"].append(elapsed)
             err = str(e)
+            tb = traceback.format_exc()
             _log.error(
                 "generate_content failed\n  model=%s\n  prompt=%r\n  error=%s",
                 model, prompt[:80], err,
+            )
+            from .diagnostics import get_error_log
+            get_error_log().add(
+                operation="generate_image",
+                model=model,
+                endpoint=f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                method="SDK generate_content",
+                request_summary=f"prompt={prompt[:120]} has_ref={reference_image_bytes is not None}",
+                response_status=None,
+                response_body=err[:500],
+                error_msg=err,
+                stack_trace=tb,
+                fix_suggestion=(
+                    "Check PERMISSION_DENIED / 404 → enable image generation at "
+                    "https://aistudio.google.com. Check model name is still active."
+                ),
             )
             raise RuntimeError(
                 f"Image generation failed.\n"
@@ -355,20 +423,40 @@ class GeminiClient:
                 f"for your API key. Visit https://aistudio.google.com"
             ) from e
 
+        elapsed = time.time() - t_start
+        self._perf["total_time"] += elapsed
+        self._perf["timings"].append(elapsed)
+
         for candidate in (response.candidates or []):
             for part in candidate.content.parts:
                 if hasattr(part, "inline_data") and part.inline_data:
-                    _log.info("generate_image succeeded  model=%s", model)
+                    _log.info("generate_image succeeded  model=%s  elapsed=%.2fs", model, elapsed)
                     return part.inline_data.data
 
-        raise RuntimeError(
+        self._perf["errors"] += 1
+        no_data_err = (
             f"Gemini returned no image data.\n"
             f"Model: {model}\n"
             f"Response candidates: {len(response.candidates or [])}\n"
             f"Full response: {response}"
         )
+        from .diagnostics import get_error_log
+        get_error_log().add(
+            operation="generate_image",
+            model=model,
+            endpoint=f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+            method="SDK generate_content",
+            request_summary=f"prompt={prompt[:120]}",
+            response_status=None,
+            response_body=str(response)[:500],
+            error_msg="No image data in response",
+            stack_trace="",
+            fix_suggestion="Response had no inline_data parts. Check model supports IMAGE modality.",
+        )
+        raise RuntimeError(no_data_err)
 
     def edit_image(self, image_bytes: bytes, instruction: str) -> bytes:
+        # generate_image handles perf tracking and error logging
         return self.generate_image(instruction, reference_image_bytes=image_bytes)
 
     def generate_angles(self, prompt_base: str, reference_image_bytes: bytes,

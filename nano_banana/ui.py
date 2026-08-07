@@ -888,7 +888,16 @@ def render_nano_banana():
 
     # ── Tab 14: Dashboard ─────────────────────────────────────────────────────
     with tabs[13]:
+        from .diagnostics import (
+            run_startup_diagnostics,
+            run_full_connection_test,
+            run_production_checklist,
+            get_error_log,
+        )
+
         st.markdown("### 📊 Session Dashboard")
+
+        # ── Section 1: Session metrics ────────────────────────────────────────
         api_calls  = st.session_state.nb_api_calls
         gen_time   = st.session_state.nb_gen_time
         errors     = st.session_state.nb_errors
@@ -903,110 +912,137 @@ def render_nano_banana():
 
         st.markdown("---")
 
-        # ── Startup Diagnostics ───────────────────────────────────────────────
-        st.markdown("### 🔬 API Compatibility Report")
+        # ── Section 2: Startup Diagnostics ───────────────────────────────────
+        st.markdown("### 🔬 Startup Diagnostics")
 
-        from .api_client import get_versions, _IMAGE_MODELS_OFFICIAL
+        if st.button("🔄 Refresh Diagnostics", key="nb_diag_refresh"):
+            if "nb_startup_diag" in st.session_state:
+                del st.session_state["nb_startup_diag"]
 
-        versions = get_versions()
-        st.markdown("**Installed versions**")
-        vcols = st.columns(5)
-        for i, (pkg, ver) in enumerate(versions.items()):
-            vcols[i % 5].code(f"{pkg}\n{ver}")
+        if "nb_startup_diag" not in st.session_state:
+            with st.spinner("Running startup diagnostics..."):
+                st.session_state["nb_startup_diag"] = run_startup_diagnostics(GOOGLE_API_KEY)
 
-        st.markdown("**Official image-generation models (checked 2026-08-07)**")
-        for m in _IMAGE_MODELS_OFFICIAL:
-            st.code(m)
+        diag = st.session_state["nb_startup_diag"]
 
-        masked_key = ("NOT SET" if not GOOGLE_API_KEY else
-                      "*" * max(0, len(GOOGLE_API_KEY) - 4) + GOOGLE_API_KEY[-4:])
-        st.markdown(f"**API key loaded:** `{masked_key}`")
-        st.markdown("**Authentication method:** API key (query parameter)")
-        st.markdown("**Endpoint:** `https://generativelanguage.googleapis.com/v1beta/models/{{model}}:generateContent`")
+        import pandas as pd
+
+        diag_rows = []
+        versions = diag.get("versions", {})
+        for pkg, ver in versions.items():
+            diag_rows.append({"Item": pkg, "Value": ver})
+        diag_rows.append({"Item": "Internet", "Value": "✅ Reachable" if diag.get("internet") else "❌ Unreachable"})
+        gapi = diag.get("google_api", {})
+        diag_rows.append({"Item": "Google API", "Value": "✅ Reachable" if gapi.get("reachable") else f"❌ {gapi.get('error', 'Unreachable')}"})
+        diag_rows.append({"Item": "Model count", "Value": str(gapi.get("model_count", 0))})
+        diag_rows.append({"Item": "Image models discovered", "Value": ", ".join(diag.get("image_models", [])) or "none"})
+        diag_rows.append({"Item": "Selected model", "Value": diag.get("selected_model") or "none"})
+        diag_rows.append({"Item": "Image gen supported", "Value": "✅ Yes" if diag.get("image_gen_supported") else "❌ No"})
+        diag_rows.append({"Item": "Image edit supported", "Value": "✅ Yes" if diag.get("image_edit_supported") else "❌ No"})
+        diag_rows.append({"Item": "API key", "Value": diag.get("api_key_masked", "NOT SET")})
+        diag_rows.append({"Item": "Auth method", "Value": diag.get("auth_method", "")})
+        diag_rows.append({"Item": "Last checked", "Value": diag.get("timestamp", "")})
+
+        st.dataframe(pd.DataFrame(diag_rows), use_container_width=True, hide_index=True)
+
+        if diag.get("all_models"):
+            with st.expander(f"All accessible models ({len(diag['all_models'])})"):
+                for m in sorted(diag["all_models"]):
+                    st.text(m)
 
         st.markdown("---")
 
-        # ── Test Connection button ────────────────────────────────────────────
+        # ── Section 3: Test Connection ────────────────────────────────────────
         st.markdown("### 🔌 Test Connection")
-        if st.button("▶ Run Full Compatibility Test", key="nb_test_conn", type="primary"):
-            with st.spinner("Running diagnostics — this may take 20–30 seconds..."):
-                report = engine.client.run_diagnostics()
+        if st.button("▶ Run Full Connection Test (8 steps)", key="nb_test_conn", type="primary"):
+            with st.spinner("Running 8-step connection test — may take 20–30 seconds..."):
+                conn_steps = run_full_connection_test(engine.client)
+            st.session_state["nb_conn_steps"] = conn_steps
 
-            st.markdown("#### Results")
-
-            def _check(label: str, ok: bool, detail: str = ""):
+        if "nb_conn_steps" in st.session_state:
+            for s in st.session_state["nb_conn_steps"]:
+                ok = s["ok"]
                 icon = "✅" if ok else "❌"
-                msg = f"{icon} **{label}**"
-                if detail:
-                    msg += f" — {detail}"
-                st.markdown(msg)
-
-            _check("SDK compatible (google-genai installed)",
-                   report["sdk_compatible"],
-                   versions.get("google-genai", "not installed"))
-
-            _check("API key loaded",
-                   report["api_key_loaded"],
-                   report["api_key_masked"])
-
-            model_found = report["image_model_found"]
-            _check("Image model found",
-                   report["model_compatible"],
-                   model_found or "none of the official models responded 200")
-
-            _check("Endpoint compatible",
-                   report["model_compatible"],
-                   report["endpoint"])
-
-            _check("Authentication valid",
-                   report["api_key_loaded"] and not any("PERMISSION" in e for e in report["errors"]),
-                   "API key accepted" if report["api_key_loaded"] else "no key")
-
-            _check("Image generation supported",
-                   report["image_gen_supported"],
-                   f"model={model_found}" if model_found else "")
-
-            _check("Image editing supported",
-                   report["image_edit_supported"],
-                   "same endpoint as generation")
-
-            test = report.get("test_image_result") or {}
-            _check("Test image generation passed",
-                   test.get("success", False),
-                   f"model={test.get('model')}" if test.get("success") else test.get("error", ""))
-
-            if report["errors"]:
-                st.markdown("**Errors:**")
-                for err in report["errors"]:
-                    st.error(err)
-
-            if report["warnings"]:
-                st.markdown("**Warnings:**")
-                for w in report["warnings"]:
-                    st.warning(w)
-
-            if report["available_models"]:
-                with st.expander(f"All accessible models ({len(report['available_models'])})"):
-                    for m in sorted(report["available_models"]):
-                        st.text(m)
-
-            if not report["image_gen_supported"]:
-                st.info(
-                    "**How to enable image generation:**\n\n"
-                    "1. Go to https://aistudio.google.com\n"
-                    "2. Sign in with the account that owns this API key\n"
-                    "3. Enable Imagen / image generation access (requires billing)\n"
-                    "4. The official supported models are: `" +
-                    "`, `".join(_IMAGE_MODELS_OFFICIAL) + "`\n\n"
-                    "Background replacement, Enhance, and Editor tabs work **without** "
-                    "image generation — they use rembg + PIL locally."
-                )
+                st.markdown(f"{icon} **{s['step']}** — {s['detail']}")
 
         st.markdown("---")
+
+        # ── Section 4: Production Checklist ──────────────────────────────────
+        st.markdown("### ✔️ Production Checklist")
+        if st.button("▶ Run Production Checklist", key="nb_prod_checklist"):
+            with st.spinner("Running production checks..."):
+                checklist = run_production_checklist(engine, GOOGLE_API_KEY)
+            st.session_state["nb_prod_checklist"] = checklist
+
+        if "nb_prod_checklist" in st.session_state:
+            cl = st.session_state["nb_prod_checklist"]
+            for key, result in cl.items():
+                label = key.replace("_", " ").title()
+                ok = result.get("ok")
+                if ok is True:
+                    icon = "✅"
+                elif ok is False:
+                    icon = "❌"
+                else:
+                    icon = "⚠️"
+                if key == "security_audit":
+                    issues = result.get("issues", [])
+                    detail = "No issues found" if ok else f"{len(issues)} potential issue(s)"
+                    st.markdown(f"{icon} **{label}** — {detail}")
+                    if issues:
+                        with st.expander("Security issues"):
+                            for iss in issues:
+                                st.code(iss)
+                else:
+                    detail = result.get("detail", "")
+                    st.markdown(f"{icon} **{label}** — {detail}")
+
+        st.markdown("---")
+
+        # ── Section 5: Performance Metrics ───────────────────────────────────
+        st.markdown("### ⚡ Performance Metrics")
+        perf = engine.client.get_perf_metrics()
+        pc1, pc2, pc3, pc4, pc5 = st.columns(5)
+        pc1.metric("API Requests", perf["requests"])
+        pc2.metric("Errors", perf["errors"])
+        pc3.metric("Error Rate", f"{perf['error_rate']}%")
+        pc4.metric("Avg Time", f"{perf['avg_time']}s")
+        pc5.metric("Total Time", f"{perf['total_time']}s")
+
+        st.markdown("---")
+
+        # ── Section 6: Error Log ──────────────────────────────────────────────
+        st.markdown("### 🪵 Error Log")
+        error_log = get_error_log()
+        log_entries = error_log.get_all()
+
+        if st.button("🗑️ Clear Error Log", key="nb_clear_errlog"):
+            error_log.clear()
+            st.rerun()
+
+        if not log_entries:
+            st.info("No errors logged in this session.")
+        else:
+            st.markdown(f"**{len(log_entries)} error(s) recorded**")
+            for entry in reversed(log_entries[-50:]):
+                with st.expander(
+                    f"[{entry['timestamp'][:19]}] {entry['operation']} — {entry['error_msg'][:80]}"
+                ):
+                    ec1, ec2 = st.columns(2)
+                    ec1.markdown(f"**Model:** `{entry['model']}`")
+                    ec2.markdown(f"**Status:** `{entry['response_status']}`")
+                    st.markdown(f"**Error:** {entry['error_msg']}")
+                    if entry.get("fix_suggestion"):
+                        st.info(f"**Fix suggestion:** {entry['fix_suggestion']}")
+                    if entry.get("response_body"):
+                        st.code(entry["response_body"][:400], language=None)
+
+        st.markdown("---")
+
+        # ── Section 7: Generation History (unchanged) ─────────────────────────
         st.markdown("**Generation History**")
         hist = history.get_all()
         if hist:
-            import pandas as pd
             df = pd.DataFrame([
                 {"ID": h["id"], "Type": h["job_type"], "Prompt": h["prompt"][:60],
                  "Engine": h["engine"], "Time": h["timestamp"], "Status": h["status"]}
