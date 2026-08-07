@@ -1,21 +1,55 @@
-"""Nano Banana — background replacement module."""
+"""Nano Banana — background replacement using rembg + PIL (no Gemini required)."""
 import io
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFilter
+import math
 
-from .api_client import GeminiClient
-from .prompt_builder import build_background_prompt
+# Solid backgrounds
+_SOLID = {
+    "White":       (255, 255, 255),
+    "Grey":        (180, 180, 180),
+    "Black":       (20,  20,  20),
+    "Luxury White":(248, 248, 248),
+}
 
-
-_SOLID_COLORS = {
-    "White": (255, 255, 255),
-    "Grey": (128, 128, 128),
-    "Black": (0, 0, 0),
+# Gradient backgrounds: (top_color, bottom_color)
+_GRADIENT = {
+    "Marble":        ((245, 245, 245), (220, 220, 220)),
+    "Concrete":      ((160, 160, 155), (120, 120, 115)),
+    "Wood":          ((180, 130,  80), (140,  95,  55)),
+    "Luxury Studio": ((240, 235, 230), (200, 195, 190)),
+    "Kitchen":       ((235, 230, 220), (200, 195, 185)),
+    "Living Room":   ((230, 220, 210), (190, 180, 170)),
+    "Bedroom":       ((230, 225, 240), (200, 195, 210)),
+    "Office":        ((220, 225, 235), (180, 185, 200)),
+    "Retail Store":  ((245, 245, 245), (210, 210, 215)),
+    "Luxury Boutique":((240, 230, 215),(200, 185, 165)),
+    "Beach":         ((135, 195, 235), (220, 200, 160)),
+    "Mountain":      ((100, 130, 180), (150, 170, 140)),
+    "Forest":        (( 60, 110,  60), (100, 150,  80)),
+    "Nature":        (( 80, 150,  80), (150, 200, 100)),
+    "Garden":        ((120, 180,  80), (200, 230, 140)),
+    "Airport":       ((200, 210, 225), (170, 180, 200)),
+    "Hotel":         ((225, 215, 200), (185, 170, 150)),
+    "Restaurant":    ((200, 175, 150), (155, 130, 110)),
+    "Cafe":          ((215, 195, 170), (170, 148, 120)),
+    "Gym":           (( 50,  50,  60), (100, 100, 120)),
+    "Sports Ground": (( 60, 130,  60), (140, 190,  80)),
+    "Festival":      ((200,  80, 160), (240, 160,  60)),
+    "Wedding":       ((255, 240, 245), (240, 220, 230)),
+    "Christmas":     (( 20,  80,  30), (180,  20,  20)),
+    "Diwali":        ((200, 100,  20), (240, 180,   0)),
+    "Rain":          (( 80,  90, 110), (130, 140, 160)),
+    "Snow":          ((200, 215, 235), (240, 245, 250)),
+    "Sunset":        ((240, 100,  40), (250, 180,  60)),
+    "Golden Hour":   ((240, 170,  60), (250, 210, 100)),
+    "Night":         (( 10,  10,  30), ( 40,  40,  80)),
+    "Auto (keep original)": None,
 }
 
 
 class BackgroundGenerator:
     def __init__(self):
-        self.client = GeminiClient()
+        pass  # no API client needed
 
     def replace_background(
         self,
@@ -24,58 +58,54 @@ class BackgroundGenerator:
         custom_prompt: str = "",
         product_desc: str = "",
     ) -> Image.Image:
-        """
-        Replace the background of a product image.
+        if background_option == "Auto (keep original)":
+            return product_image.convert("RGB")
 
-        Steps:
-        1. Remove existing background using rembg.
-        2. If solid color — composite on color fill.
-        3. If Transparent — return RGBA with removed background.
-        4. Otherwise generate AI background and composite.
-        """
-        # 1 — Remove background
+        if background_option == "Transparent":
+            return self._remove_bg(product_image)
+
         fg_rgba = self._remove_bg(product_image)
 
-        # 2 — Transparent: just return the cutout
-        from .settings import BACKGROUND_OPTIONS
-        if background_option == "Transparent":
-            return fg_rgba
+        if background_option in _SOLID:
+            return self._on_color(fg_rgba, _SOLID[background_option])
 
-        # 3 — Solid colors: no AI call needed
-        if background_option in _SOLID_COLORS:
-            return self._composite_on_color(fg_rgba, _SOLID_COLORS[background_option])
+        if background_option in _GRADIENT and _GRADIENT[background_option] is not None:
+            bg = self._make_gradient(fg_rgba.size, *_GRADIENT[background_option])
+            return self._composite(fg_rgba, bg)
 
-        # 4 — AI-generated background
-        prompt = build_background_prompt(background_option, product_desc, custom_prompt)
-        bg_bytes = self.client.generate_image(prompt)
-        bg_img = Image.open(io.BytesIO(bg_bytes)).convert("RGBA")
-        bg_img = bg_img.resize(product_image.size, Image.LANCZOS)
-
-        return self._composite(fg_rgba, bg_img)
+        # Custom prompt or unknown → white background
+        return self._on_color(fg_rgba, (255, 255, 255))
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
     def _remove_bg(self, image: Image.Image) -> Image.Image:
-        """Remove background using rembg; fallback to original if unavailable."""
         try:
             import rembg
-            img_bytes = io.BytesIO()
-            image.save(img_bytes, format="PNG")
-            result_bytes = rembg.remove(img_bytes.getvalue())
-            return Image.open(io.BytesIO(result_bytes)).convert("RGBA")
-        except ImportError:
-            # rembg not installed — return image with white removed naively
-            return image.convert("RGBA")
+            buf = io.BytesIO()
+            image.save(buf, format="PNG")
+            result = rembg.remove(buf.getvalue())
+            return Image.open(io.BytesIO(result)).convert("RGBA")
         except Exception:
             return image.convert("RGBA")
 
-    def _composite_on_color(
-        self, fg_rgba: Image.Image, color: tuple
-    ) -> Image.Image:
+    def _make_gradient(self, size, top_color, bottom_color) -> Image.Image:
+        w, h = size
+        bg = Image.new("RGBA", size)
+        draw = ImageDraw.Draw(bg)
+        for y in range(h):
+            t = y / max(h - 1, 1)
+            r = int(top_color[0] + (bottom_color[0] - top_color[0]) * t)
+            g = int(top_color[1] + (bottom_color[1] - top_color[1]) * t)
+            b = int(top_color[2] + (bottom_color[2] - top_color[2]) * t)
+            draw.line([(0, y), (w, y)], fill=(r, g, b, 255))
+        return bg
+
+    def _on_color(self, fg_rgba: Image.Image, color: tuple) -> Image.Image:
         bg = Image.new("RGBA", fg_rgba.size, color + (255,))
         bg.paste(fg_rgba, mask=fg_rgba.split()[3])
         return bg.convert("RGB")
 
-    def _composite(self, fg_rgba: Image.Image, bg_rgba: Image.Image) -> Image.Image:
-        bg_rgba.paste(fg_rgba, mask=fg_rgba.split()[3])
-        return bg_rgba.convert("RGB")
+    def _composite(self, fg_rgba: Image.Image, bg: Image.Image) -> Image.Image:
+        bg = bg.resize(fg_rgba.size, Image.LANCZOS)
+        bg.paste(fg_rgba, mask=fg_rgba.split()[3])
+        return bg.convert("RGB")

@@ -7,11 +7,10 @@ from typing import Optional
 
 from .settings import GOOGLE_API_KEY
 
-# Ordered list of models to try — first available one wins
+# Ordered list of models to try for image generation (require special API access)
 _GEMINI_IMG_MODELS = [
     "gemini-2.0-flash-preview-image-generation",
     "gemini-2.0-flash-exp-image-generation",
-    "gemini-2.0-flash",
 ]
 _GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
