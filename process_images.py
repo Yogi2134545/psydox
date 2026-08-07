@@ -653,7 +653,7 @@ def save_image(processed: Image.Image, dest: Path, quality: int) -> bool:
         dest.parent.mkdir(parents=True, exist_ok=True)
         # subsampling=0 keeps full chroma resolution (4:4:4) — best quality at any quality level
         processed.convert("RGB").save(dest, "JPEG", quality=quality,
-                                      optimize=False, subsampling=2)
+                                      optimize=False, subsampling=0)
         return True
     except Exception as e:
         log.error(f"    ✗ save failed {dest}: {e}")
@@ -852,9 +852,17 @@ def process_all(cfg: dict,
     total = len(all_tasks)
     pack_images_by_style = {sc: [] for sc in style_map}
 
+    import threading as _threading
+    _active_count = [0]
+    _active_lock  = _threading.Lock()
+
     def _process_one_ex(args):
         src, folder, cfg, img_idx, img_total, style_code = args
-        res = _process_one((src, folder, cfg, img_idx, img_total))
+        with _active_lock: _active_count[0] += 1
+        try:
+            res = _process_one((src, folder, cfg, img_idx, img_total))
+        finally:
+            with _active_lock: _active_count[0] -= 1
         res["_style_code"] = style_code
         res["_src"] = src
         return res
@@ -882,7 +890,7 @@ def process_all(cfg: dict,
             elif res["is_failed_dl"]: failed_dl += 1
             else:                     skipped  += 1
             done += 1
-            if progress_cb: progress_cb(done, total_images)
+            if progress_cb: progress_cb(done, total_images, _active_count[0])
 
     # ── pack composites (optional) ────────────────────────────────────────────
     if cfg.get("PACK_MODE"):

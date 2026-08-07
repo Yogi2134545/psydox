@@ -132,9 +132,10 @@ if not st.session_state.logged_in:
 # ═════════════════════════════════════════════════════════════════════════════
 def _worker(job_id, cfg, out_dir):
     try:
-        def _cb(done, total):
-            _JOBS[job_id]["done"]  = done
-            _JOBS[job_id]["total"] = total
+        def _cb(done, total, active=0):
+            _JOBS[job_id]["done"]   = done
+            _JOBS[job_id]["total"]  = total
+            _JOBS[job_id]["active"] = active
             try:
                 while True:
                     _JOBS[job_id]["previews"].append(_preview_queue.get_nowait())
@@ -305,11 +306,16 @@ def _poll():
         return
     j = _read_job(jid)
     if j.get("running"):
-        done  = j.get("done",  0)
-        total = j.get("total", 0)
-        pct   = done / total if total > 0 else 0
+        done     = j.get("done",  0)
+        total    = j.get("total", 0)
+        active   = j.get("active", 0)
+        pct      = done / total if total > 0 else 0
+        remaining = total - done
         st.progress(pct, text=f"⏳  {done} / {total} images — {int(pct*100)}%")
-        st.info("Processing… updates every 2 s")
+        cols = st.columns(3)
+        cols[0].metric("✅ Done", done)
+        cols[1].metric("⚡ Downloading", active if active > 0 else "—")
+        cols[2].metric("🕐 Remaining", remaining)
     elif (j.get("results") or j.get("error")) and not j.get("_shown"):
         # Job just finished — trigger ONE full rerun to show results, then stop
         j["_shown"] = True
