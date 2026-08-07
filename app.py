@@ -67,8 +67,9 @@ def _check_creds(email, password):
     return None
 
 # ── Session defaults ──────────────────────────────────────────────────────────
-for k, v in {"logged_in": False, "user_name": "", "job_id": None,
-              "preview_idx": 0, "zip_bytes": None, "excel_bytes": None}.items():
+for k, v in {"logged_in": False, "user_name": "", "user_email": "", "job_id": None,
+              "preview_idx": 0, "zip_bytes": None, "excel_bytes": None,
+              "nb_mode": False}.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
@@ -79,7 +80,13 @@ _url_zip = st.query_params.get("zip")
 if st.session_state.job_id is None:
     if _url_job:
         d = _read_job(_url_job)
-        if d:
+        if d and not d.get("running"):
+            # Only restore finished jobs — don't restore a wiped job folder
+            if _job_dir(_url_job).exists():
+                st.session_state.job_id = _url_job
+            else:
+                st.query_params.clear()
+        elif d.get("running"):
             st.session_state.job_id = _url_job
     elif _url_zip:
         zp = _job_dir(_url_zip) / "_psydox_output.zip"
@@ -192,11 +199,15 @@ with st.sidebar:
     st.markdown("## 📂 Upload Excel")
     uploaded = st.file_uploader("Excel (.xlsx / .xls)", type=["xlsx","xls"],
                                  key="file_uploader")
-    # Persist bytes so they survive reruns
     if uploaded:
         st.session_state.excel_bytes = uploaded.getvalue()
+    elif st.session_state.excel_bytes is None:
+        # Show helper text when no file is loaded
+        st.caption("No file loaded — please upload an Excel file.")
 
     have_file = st.session_state.excel_bytes is not None
+    if have_file and not uploaded:
+        st.caption("✅ File ready to process.")
 
     st.markdown("## 🖼️ Image Settings")
     rkeys = list(RATIO_PRESETS.keys())
