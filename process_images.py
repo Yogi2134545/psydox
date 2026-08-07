@@ -714,7 +714,7 @@ def build_pack_image(pil_images: list, cfg: dict) -> Image.Image:
 #  8.  ORCHESTRATOR (parallel workers — download + process simultaneously)
 # ══════════════════════════════════════════════════════════════════════════════
 import os as _os
-_WORKERS = 6   # 6 parallel downloads — Railway 8GB can handle this easily
+_WORKERS = 12  # 12 parallel workers across all style codes simultaneously
 
 def _process_one(args):
     """Process a single image: download → convert → force exact size → save.
@@ -819,62 +819,69 @@ def process_all(cfg: dict,
 
     log.info(f"Starting with {_WORKERS} parallel workers for {total_images} images.")
 
+    # Build ALL tasks across ALL style codes upfront — one flat pool, no per-style barriers
+    all_tasks = []
+    style_folders = {}
     for style_code, sources in style_map.items():
-        if stop_event and stop_event.is_set():
-            log.info("⛔ Processing stopped by user.")
-            break
-
         safe   = sanitize_folder_name(style_code)
         folder = out_root / safe
         folder.mkdir(parents=True, exist_ok=True)
         if str(folder) not in folders_created:
             folders_created.append(str(folder))
+        style_folders[style_code] = folder
         log.info(f"\n── Style: {style_code}  →  {folder}")
+        for i, src in enumerate(sources):
+            all_tasks.append((src, folder, cfg, i + 1, len(sources), style_code))
 
-        # Build task list for this style code
-        tasks = [
-            (src, folder, cfg, i + 1, len(sources))
-            for i, src in enumerate(sources)
-        ]
-        total += len(tasks)
+    total = len(all_tasks)
+    pack_images_by_style = {sc: [] for sc in style_map}
 
-        pack_pil_images = []   # collect originals when pack mode is on
+    def _process_one_ex(args):
+        src, folder, cfg, img_idx, img_total, style_code = args
+        res = _process_one((src, folder, cfg, img_idx, img_total))
+        res["_style_code"] = style_code
+        res["_src"] = src
+        return res
 
-        with ThreadPoolExecutor(max_workers=min(_WORKERS, len(tasks))) as pool:
-            futures = {pool.submit(_process_one, t): t for t in tasks}
-            for fut in as_completed(futures):
-                if stop_event and stop_event.is_set():
-                    pool.shutdown(wait=False, cancel_futures=True)
-                    break
-                res = fut.result()
-                src = futures[fut][0]
-                report_rows.append(dict(style_code=style_code, source=src,
-                                        status=res["status"],
-                                        output_path=res["output_path"]))
-                if res["is_success"]:
-                    success += 1
-                    if cfg.get("PACK_MODE") and res["output_path"]:
-                        try:
-                            with Image.open(res["output_path"]) as im:
-                                pack_pil_images.append(im.copy())
-                        except Exception:
-                            pass
-                elif res["is_failed_dl"]: failed_dl += 1
-                else:                     skipped  += 1
-                done += 1
-                if progress_cb: progress_cb(done, total_images)
+    with ThreadPoolExecutor(max_workers=min(_WORKERS, len(all_tasks))) as pool:
+        futures = {pool.submit(_process_one_ex, t): t for t in all_tasks}
+        for fut in as_completed(futures):
+            if stop_event and stop_event.is_set():
+                pool.shutdown(wait=False, cancel_futures=True)
+                break
+            res        = fut.result()
+            style_code = res["_style_code"]
+            src        = res["_src"]
+            report_rows.append(dict(style_code=style_code, source=src,
+                                    status=res["status"],
+                                    output_path=res["output_path"]))
+            if res["is_success"]:
+                success += 1
+                if cfg.get("PACK_MODE") and res["output_path"]:
+                    try:
+                        with Image.open(res["output_path"]) as im:
+                            pack_images_by_style[style_code].append(im.copy())
+                    except Exception:
+                        pass
+            elif res["is_failed_dl"]: failed_dl += 1
+            else:                     skipped  += 1
+            done += 1
+            if progress_cb: progress_cb(done, total_images)
 
-        # ── pack composite (optional) ─────────────────────────────────────────
-        if cfg.get("PACK_MODE") and len(pack_pil_images) > 1:
-            try:
-                composite = build_pack_image(pack_pil_images, cfg)
-                if composite:
-                    pack_path = unique_filename(folder, "PACK.jpg")
-                    if save_image(composite, pack_path, cfg["JPEG_QUALITY"]):
-                        log.info(f"  📦 Pack shot → {pack_path.name}  "
-                                 f"[{cfg['TARGET_W']}×{cfg['TARGET_H']}]")
-            except Exception as e:
-                log.error(f"  ✗ Pack composite failed: {e}")
+    # ── pack composites (optional) ────────────────────────────────────────────
+    if cfg.get("PACK_MODE"):
+        for style_code, pack_pil_images in pack_images_by_style.items():
+            if len(pack_pil_images) > 1:
+                try:
+                    composite = build_pack_image(pack_pil_images, cfg)
+                    if composite:
+                        folder    = style_folders[style_code]
+                        pack_path = unique_filename(folder, "PACK.jpg")
+                        if save_image(composite, pack_path, cfg["JPEG_QUALITY"]):
+                            log.info(f"  📦 Pack shot → {pack_path.name}  "
+                                     f"[{cfg['TARGET_W']}×{cfg['TARGET_H']}]")
+                except Exception as e:
+                    log.error(f"  ✗ Pack composite failed for {style_code}: {e}")
 
     # Write CSV report
     rp = out_root / "summary_report.csv"
