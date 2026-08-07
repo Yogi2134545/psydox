@@ -7,7 +7,12 @@ from typing import Optional
 
 from .settings import GOOGLE_API_KEY
 
-_GEMINI_IMG_MODEL = "gemini-2.0-flash-exp-image-generation"
+# Ordered list of models to try — first available one wins
+_GEMINI_IMG_MODELS = [
+    "gemini-2.0-flash-preview-image-generation",
+    "gemini-2.0-flash-exp-image-generation",
+    "gemini-2.0-flash",
+]
 _GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
 _ANGLE_PROMPTS = [
@@ -45,30 +50,39 @@ class GeminiClient:
     # ── core REST helper ──────────────────────────────────────────────────────
 
     def _generate_image_rest(self, parts: list) -> bytes:
-        """Call gemini-2.0-flash-exp-image-generation via REST and return image bytes."""
+        """Try each Gemini image model in order and return image bytes from the first that works."""
         if not self.api_key:
             raise RuntimeError(
                 "GOOGLE_API_KEY not configured. Set it as an environment variable."
             )
-        url = f"{_GEMINI_BASE}/{_GEMINI_IMG_MODEL}:generateContent?key={self.api_key}"
         payload = {
             "contents": [{"parts": parts}],
             "generationConfig": {"responseModalities": ["IMAGE", "TEXT"]},
         }
-
-        def _call():
-            resp = requests.post(url, json=payload, timeout=120)
-            resp.raise_for_status()
-            data = resp.json()
-            candidates = data.get("candidates", [])
-            if not candidates:
-                raise RuntimeError(f"No candidates in response: {data}")
-            for part in candidates[0]["content"]["parts"]:
-                if "inlineData" in part:
-                    return base64.b64decode(part["inlineData"]["data"])
-            raise RuntimeError("No image data in Gemini response")
-
-        return self._retry(_call)
+        last_err = None
+        for model in _GEMINI_IMG_MODELS:
+            url = f"{_GEMINI_BASE}/{model}:generateContent?key={self.api_key}"
+            try:
+                resp = requests.post(url, json=payload, timeout=120)
+                if resp.status_code == 404:
+                    last_err = RuntimeError(f"Model {model} not found (404)")
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                candidates = data.get("candidates", [])
+                if not candidates:
+                    last_err = RuntimeError(f"No candidates from {model}: {data}")
+                    continue
+                for part in candidates[0]["content"]["parts"]:
+                    if "inlineData" in part:
+                        return base64.b64decode(part["inlineData"]["data"])
+                last_err = RuntimeError(f"No image data in response from {model}")
+            except requests.HTTPError as e:
+                last_err = e
+                if e.response is not None and e.response.status_code == 404:
+                    continue
+                raise
+        raise last_err or RuntimeError("All Gemini image models failed")
 
     # ── public API ────────────────────────────────────────────────────────────
 
