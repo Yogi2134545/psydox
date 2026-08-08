@@ -449,13 +449,10 @@ def render_nano_banana():
                             st.error(f"Error: {e}")
 
                 else:
-                    # ── Multi-angle packshot generation (AI, N separate calls) ─
-                    from .api_client import ANGLE_VIEWS as _AV, _build_angle_prompt
+                    # ── Multi-angle packshot via instrumented backend ──────────
                     buf = io.BytesIO()
                     img.convert("RGB").save(buf, format="JPEG", quality=90)
                     ref_bytes = buf.getvalue()
-
-                    selected_angles = _AV[:n]
 
                     # Reset and store ref for per-angle regeneration
                     st.session_state.nb_packshot_results = []
@@ -464,66 +461,34 @@ def render_nano_banana():
                     st.session_state.nb_angle_results = []
 
                     prog = st.progress(0, text=f"Starting {n} generation jobs…")
-                    log_area = st.empty()
-                    log_lines = []
 
-                    def _log(msg):
-                        log_lines.append(msg)
-                        log_area.markdown("\n\n".join(log_lines[-12:]))
+                    # Single call — backend does all N API calls and logs everything
+                    raw_results = engine.client.generate_packshot_angles(
+                        product_desc_bg, ref_bytes, count=n
+                    )
 
-                    _log(f"**Selected Angles = {n}**  |  Jobs Created = {len(selected_angles)}")
-
-                    for i, angle in enumerate(selected_angles):
-                        prog.progress(i / n,
-                                      text=f"⏳ API Call #{i+1}/{n} — {angle['name']}…")
-                        _log(f"API Call #{i+1}/{n}: **{angle['name']}** …")
-                        prompt = _build_angle_prompt(product_desc_bg, angle)
-                        try:
-                            img_bytes = engine.client.generate_image(prompt, ref_bytes)
-                            entry = {
-                                "name":  angle["name"],
-                                "label": angle["label"],
-                                "key":   angle["key"],
-                                "bytes": img_bytes,
-                                "error": None,
-                            }
-                            # Persist immediately so partial results survive
-                            st.session_state.nb_packshot_results.append(entry)
-                            _log(f"✅ #{i+1} {angle['name']} — "
-                                 f"{len(img_bytes):,} bytes  "
-                                 f"(stored={len(st.session_state.nb_packshot_results)})")
+                    # Copy into session state and save history
+                    for r in raw_results:
+                        st.session_state.nb_packshot_results.append(r)
+                        if r.get("bytes"):
                             try:
                                 from PIL import Image as _PIL
-                                result_img = _PIL.open(io.BytesIO(img_bytes))
+                                result_img = _PIL.open(io.BytesIO(r["bytes"]))
                                 history.add(
-                                    f"Packshot: {angle['name']}",
+                                    f"Packshot: {r['name']}",
                                     img, result_img,
-                                    f"{angle['name']} — {product_desc_bg}",
+                                    f"{r['name']} — {product_desc_bg}",
                                     "Gemini",
                                 )
                             except Exception:
                                 pass
                             st.session_state.nb_api_calls += 1
-                        except Exception as exc:
-                            err = str(exc)
-                            entry = {
-                                "name":  angle["name"],
-                                "label": angle["label"],
-                                "key":   angle["key"],
-                                "bytes": None,
-                                "error": err,
-                            }
-                            st.session_state.nb_packshot_results.append(entry)
-                            _log(f"❌ #{i+1} {angle['name']} FAILED — {err[:120]}")
+                        else:
                             st.session_state.nb_errors += 1
 
                     elapsed = time.time() - t0
                     st.session_state.nb_gen_time += elapsed
-                    good = sum(1 for r in st.session_state.nb_packshot_results
-                               if r.get("bytes"))
-                    _log(f"---")
-                    _log(f"**Images Returned = {good}  |  Images Stored = "
-                         f"{len(st.session_state.nb_packshot_results)}**")
+                    good = sum(1 for r in raw_results if r.get("bytes"))
                     prog.progress(1.0,
                                   text=f"✅ Done: {good}/{n} images in {elapsed:.1f}s")
                     st.rerun()

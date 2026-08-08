@@ -545,7 +545,14 @@ class GeminiClient:
              "bytes": bytes | None, "error": str | None}
 
         Never raises — individual angle failures are captured in "error".
+
+        Debug instrumentation: every generated image is written to
+        /tmp/debug_angles/<key>.jpg immediately after each API call.
+        A summary ZIP is written to /tmp/debug_angles/debug_packshot.zip.
+        All SHA256 hashes are logged so identical images can be detected.
         """
+        import hashlib, os, zipfile as _zf
+
         if not self.api_key:
             raise RuntimeError("GOOGLE_API_KEY not set — cannot generate angles.")
         if not self._sdk_ok:
@@ -553,17 +560,74 @@ class GeminiClient:
                 "google-genai SDK not installed — add 'google-genai' to requirements.txt."
             )
 
-        selected = ANGLE_VIEWS[:min(count, len(ANGLE_VIEWS))]
-        results = []
+        # ── Debug output directory ────────────────────────────────────────────
+        debug_dir = "/tmp/debug_angles"
+        try:
+            os.makedirs(debug_dir, exist_ok=True)
+        except Exception as _de:
+            _log.warning("Could not create debug dir %s: %s", debug_dir, _de)
+            debug_dir = None
 
-        for angle in selected:
+        selected = ANGLE_VIEWS[:min(count, len(ANGLE_VIEWS))]
+        results  = []
+        hashes   = []
+
+        _log.info(
+            "generate_packshot_angles START  count=%d  selected=%d  angles=%s",
+            count, len(selected), [a["name"] for a in selected],
+        )
+        print(
+            f"\n{'='*60}\n"
+            f"generate_packshot_angles START\n"
+            f"  count requested : {count}\n"
+            f"  angles selected : {len(selected)}\n"
+            f"  angle names     : {[a['name'] for a in selected]}\n"
+            f"{'='*60}"
+        )
+
+        for i, angle in enumerate(selected):
             prompt = _build_angle_prompt(product_desc, angle)
+
             _log.info(
-                "packshot_angle  name=%s  prompt=%r",
-                angle["name"], prompt[:80],
+                "packshot_angle [%d/%d]  name=%s  prompt=%r",
+                i + 1, len(selected), angle["name"], prompt[:80],
             )
+            print(
+                f"\n--- API Call #{i+1}/{len(selected)} ---\n"
+                f"  Angle  : {angle['name']}\n"
+                f"  Prompt : {prompt[:200]}…"
+            )
+
             try:
                 img_bytes = self.generate_image(prompt, reference_image_bytes)
+
+                sha = hashlib.sha256(img_bytes).hexdigest()
+                hashes.append(sha)
+                nb    = len(img_bytes)
+                fname = f"{angle['key']}.jpg"
+
+                # Write to disk immediately
+                saved_path = None
+                if debug_dir:
+                    try:
+                        saved_path = os.path.join(debug_dir, fname)
+                        with open(saved_path, "wb") as _f:
+                            _f.write(img_bytes)
+                    except Exception as _we:
+                        _log.warning("Could not write debug file %s: %s", saved_path, _we)
+                        saved_path = None
+
+                _log.info(
+                    "packshot_angle OK [%d/%d]  name=%s  bytes=%d  sha256=%s  saved=%s",
+                    i + 1, len(selected), angle["name"], nb, sha[:16], saved_path,
+                )
+                print(
+                    f"  Response #{i+1}  : SUCCESS\n"
+                    f"  Bytes    : {nb:,}\n"
+                    f"  SHA256   : {sha}\n"
+                    f"  Saved    : {saved_path or 'NOT SAVED'}"
+                )
+
                 results.append({
                     "name":  angle["name"],
                     "label": angle["label"],
@@ -571,10 +635,17 @@ class GeminiClient:
                     "bytes": img_bytes,
                     "error": None,
                 })
-                _log.info("packshot_angle OK  name=%s  bytes=%d", angle["name"], len(img_bytes))
+
             except Exception as exc:
                 err = str(exc)
-                _log.error("packshot_angle FAILED  name=%s  error=%s", angle["name"], err)
+                _log.error(
+                    "packshot_angle FAILED [%d/%d]  name=%s  error=%s",
+                    i + 1, len(selected), angle["name"], err,
+                )
+                print(
+                    f"  Response #{i+1}  : FAILED\n"
+                    f"  Error    : {err[:300]}"
+                )
                 results.append({
                     "name":  angle["name"],
                     "label": angle["label"],
@@ -582,6 +653,40 @@ class GeminiClient:
                     "bytes": None,
                     "error": err,
                 })
+
+        # ── Summary ───────────────────────────────────────────────────────────
+        total_calls   = len(selected)
+        total_ok      = sum(1 for r in results if r.get("bytes"))
+        total_failed  = total_calls - total_ok
+        unique_hashes = len(set(hashes))
+
+        summary = (
+            f"\n{'='*60}\n"
+            f"generate_packshot_angles COMPLETE\n"
+            f"  Total API Calls          : {total_calls}\n"
+            f"  Successful Responses     : {total_ok}\n"
+            f"  Failed Responses         : {total_failed}\n"
+            f"  Images Saved to Disk     : {total_ok}\n"
+            f"  Unique SHA256 Hashes     : {unique_hashes}\n"
+            f"  Duplicate images?        : {'YES — same image returned for all calls' if unique_hashes == 1 and total_ok > 1 else 'No'}\n"
+            f"  SHA256 list              : {hashes}\n"
+            f"{'='*60}\n"
+        )
+        _log.info(summary)
+        print(summary)
+
+        # ── Write debug ZIP ───────────────────────────────────────────────────
+        if debug_dir and total_ok > 0:
+            try:
+                zip_path = os.path.join(debug_dir, "debug_packshot.zip")
+                with _zf.ZipFile(zip_path, "w", _zf.ZIP_DEFLATED) as _zout:
+                    for r in results:
+                        if r.get("bytes"):
+                            _zout.writestr(f"{r['key']}.jpg", r["bytes"])
+                _log.info("Debug ZIP written: %s  (%d files)", zip_path, total_ok)
+                print(f"  Debug ZIP : {zip_path}  ({total_ok} files)")
+            except Exception as _ze:
+                _log.warning("Could not write debug ZIP: %s", _ze)
 
         return results
 
