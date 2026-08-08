@@ -506,7 +506,102 @@ def render_nano_banana():
                     good = sum(1 for r in raw_results if r.get("bytes"))
                     prog.progress(1.0,
                                   text=f"✅ Done: {good}/{n} images in {elapsed:.1f}s")
-                    st.rerun()
+
+                    # Mark that gallery was rendered inline this run
+                    # so the persistent display section below does not double-render
+                    st.session_state._nb_inline_rendered = True
+
+                    # ── Inline gallery (rendered immediately, same script run) ──
+                    # Does NOT depend on st.rerun() or session-state timing.
+                    _inline = st.session_state.nb_packshot_results
+                    _good   = sum(1 for _r in _inline if _r.get("bytes"))
+                    st.success(f"✅ Generated {_good}/{n} packshot angles in {elapsed:.1f}s")
+                    st.markdown(f"### 📸 Generated Angles — {_good}/{n} succeeded")
+                    if _get_image():
+                        _ic = st.columns([1, 3])
+                        with _ic[0]:
+                            st.markdown("**Original**")
+                            st.image(_get_image(), use_container_width=True)
+                    st.markdown("**Generated Images**")
+                    st.markdown("---")
+                    _cols3 = 3
+                    for _rs in range(0, len(_inline), _cols3):
+                        _row = _inline[_rs:_rs + _cols3]
+                        _rc  = st.columns(_cols3)
+                        for _ci2, _item2 in enumerate(_row):
+                            with _rc[_ci2]:
+                                st.markdown(f"**{_item2['name']}**")
+                                if _item2.get("bytes"):
+                                    st.image(_item2["bytes"], use_container_width=True)
+                                    st.download_button(
+                                        f"⬇ {_item2['label']}.jpg",
+                                        data=_item2["bytes"],
+                                        file_name=f"{_item2['key']}.jpg",
+                                        mime="image/jpeg",
+                                        key=f"nb_inline_dl_{_item2['key']}",
+                                        use_container_width=True,
+                                    )
+                                else:
+                                    st.error("Failed")
+                                    if _item2.get("error"):
+                                        st.caption(_item2["error"][:120])
+                    st.markdown("---")
+                    if _good > 0:
+                        st.markdown("#### ⬇ Export")
+                        _xc1, _xc2, _xc3 = st.columns(3)
+                        with _xc1:
+                            _z2 = _build_packshot_zip(_inline)
+                            st.download_button(
+                                f"📦 ZIP ({_good} images)",
+                                data=_z2,
+                                file_name="psydox_packshot.zip",
+                                mime="application/zip",
+                                use_container_width=True,
+                                key="nb_inline_zip",
+                            )
+                            st.caption("Contains: " + ", ".join(
+                                _r["key"] + ".jpg" for _r in _inline if _r.get("bytes")
+                            ))
+                        with _xc2:
+                            _sh2 = _build_contact_sheet(_inline)
+                            if _sh2:
+                                st.download_button(
+                                    "🖼 Contact Sheet",
+                                    data=_sh2,
+                                    file_name="contact_sheet.jpg",
+                                    mime="image/jpeg",
+                                    use_container_width=True,
+                                    key="nb_inline_sheet",
+                                )
+                                st.image(_sh2, caption="Contact Sheet",
+                                         use_container_width=True)
+                        with _xc3:
+                            try:
+                                from PIL import Image as _PPIL2
+                                _pi2 = [
+                                    _PPIL2.open(io.BytesIO(_r["bytes"])).convert("RGB")
+                                    for _r in _inline if _r.get("bytes")
+                                ]
+                                if _pi2:
+                                    _pb2 = io.BytesIO()
+                                    _pi2[0].save(_pb2, format="PDF", save_all=True,
+                                                 append_images=_pi2[1:])
+                                    st.download_button(
+                                        "📄 PDF",
+                                        data=_pb2.getvalue(),
+                                        file_name="psydox_packshot.pdf",
+                                        mime="application/pdf",
+                                        use_container_width=True,
+                                        key="nb_inline_pdf",
+                                    )
+                            except Exception:
+                                pass
+                    st.caption(
+                        f"Selected Angles={n} | Jobs Created={n} | "
+                        f"API Calls={n} | Images Returned={len(raw_results)} | "
+                        f"Images Stored={len(_inline)} | Images Rendered={_good} | "
+                        f"ZIP Files={_good}"
+                    )
 
         # ── Show single-BG result ─────────────────────────────────────────
         if st.session_state.nb_result and st.session_state.nb_result_mode == "background":
@@ -514,8 +609,16 @@ def render_nano_banana():
                 _show_before_after(_get_image(), st.session_state.nb_result)
 
         # ── Packshot gallery ──────────────────────────────────────────────
+        # Skip if the inline gallery already rendered this script run
+        # (flag is set in the button handler above and consumed once here).
+        _just_rendered = st.session_state.get("_nb_inline_rendered", False)
+        if _just_rendered:
+            try:
+                del st.session_state["_nb_inline_rendered"]
+            except Exception:
+                pass
         ps_results = st.session_state.nb_packshot_results   # always a list
-        if ps_results:
+        if ps_results and not _just_rendered:
             good_n  = sum(1 for r in ps_results if r.get("bytes"))
             total_n = len(ps_results)
 
