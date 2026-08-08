@@ -416,6 +416,27 @@ def render_nano_banana():
             custom_bg = st.text_area("Custom Background Prompt", key="nb_bg_custom")
         product_desc_bg = st.text_input("Product Description (optional)", key="nb_pd_bg",
                                          placeholder="e.g. Nike Air Max sneaker")
+
+        # ── Output Ratio selector (shown for multi-angle) ─────────────────
+        _RATIOS = {
+            "Original (keep as-is)":  None,
+            "Square 1:1  (1080×1080)": (1080, 1080),
+            "Portrait 4:5  (1080×1350)": (1080, 1350),
+            "Portrait 9:16  (1080×1920)": (1080, 1920),
+            "Landscape 16:9  (1920×1080)": (1920, 1080),
+            "Standard 3:4  (810×1080)": (810, 1080),
+            "Wide 3:2  (1080×720)": (1080, 720),
+        }
+        if st.session_state.nb_angle_count > 1:
+            ratio_choice = st.selectbox(
+                "📐 Output Ratio",
+                list(_RATIOS.keys()),
+                key="nb_ratio_choice",
+                help="All generated images will be resized/padded to this ratio before download.",
+            )
+        else:
+            ratio_choice = "Original (keep as-is)"
+
         btn_label = ("🎨 Replace Background"
                      if st.session_state.nb_angle_count == 1
                      else f"📸 Generate {st.session_state.nb_angle_count} Packshot Angles")
@@ -521,6 +542,28 @@ def render_nano_banana():
                     for _tl in _t[-(_raw_count + 6):]:
                         print(_tl, flush=True)
                     st.session_state["_nb_trace"] = _t
+
+                    # ── Apply output ratio to each successful image ───────────
+                    _target_size = _RATIOS.get(ratio_choice)
+                    if _target_size:
+                        from PIL import Image as _PILr
+                        _tw, _th = _target_size
+                        for _ri, _r in enumerate(raw_results):
+                            if not _r.get("bytes"):
+                                continue
+                            try:
+                                _src = _PILr.open(io.BytesIO(_r["bytes"])).convert("RGB")
+                                # Fit inside target, then pad with white
+                                _src.thumbnail((_tw, _th), _PILr.LANCZOS)
+                                _canvas = _PILr.new("RGB", (_tw, _th), (255, 255, 255))
+                                _ox = (_tw - _src.width) // 2
+                                _oy = (_th - _src.height) // 2
+                                _canvas.paste(_src, (_ox, _oy))
+                                _buf = io.BytesIO()
+                                _canvas.save(_buf, format="JPEG", quality=92)
+                                raw_results[_ri]["bytes"] = _buf.getvalue()
+                            except Exception as _re:
+                                pass  # keep original bytes if resize fails
 
                     # Copy into session state and save history
                     for r in raw_results:
