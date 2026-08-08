@@ -406,7 +406,7 @@ class GeminiClient:
             return {"success": False, "model": model,
                     "error": "No image data in response", "response_body": body}
         except Exception as e:
-            return {"success": False, "model": model, "error": str(e), "url": url}
+            return {"success": False, "model": model, "error": str(e)}
 
     # ── Public generate API ───────────────────────────────────────────────────
 

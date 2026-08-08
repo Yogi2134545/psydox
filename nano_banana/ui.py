@@ -463,9 +463,24 @@ def render_nano_banana():
                     prog = st.progress(0, text=f"Starting {n} generation jobs…")
 
                     # Single call — backend does all N API calls and logs everything
-                    raw_results = engine.client.generate_packshot_angles(
-                        product_desc_bg, ref_bytes, count=n
-                    )
+                    try:
+                        raw_results = engine.client.generate_packshot_angles(
+                            product_desc_bg, ref_bytes, count=n
+                        )
+                    except Exception as _init_err:
+                        # generate_packshot_angles raises BEFORE the loop if
+                        # api_key is missing or SDK is not installed.
+                        # Without this catch the button handler exits silently,
+                        # nb_packshot_results stays [], and the previous single-
+                        # image result is displayed instead of an error.
+                        st.session_state.nb_errors += 1
+                        st.error(
+                            f"**Packshot generation failed to start.**\n\n"
+                            f"Error: `{_init_err}`\n\n"
+                            f"Check that GOOGLE_API_KEY is set and the "
+                            f"google-genai SDK is installed on Railway."
+                        )
+                        st.stop()
 
                     # Copy into session state and save history
                     for r in raw_results:
