@@ -435,8 +435,15 @@ class GeminiClient:
 
         model = self.find_image_model()
 
-        _log.info("generate_image  model=%s  prompt=%r  has_ref=%s",
-                  model, prompt[:80], reference_image_bytes is not None)
+        self._perf.setdefault("call_count", 0)
+        self._perf["call_count"] += 1
+        _call_num = self._perf["call_count"]
+
+        print(f"\n[generate_image ENTER] call_num={_call_num}  model={model}  "
+              f"has_ref={reference_image_bytes is not None}  "
+              f"prompt={prompt[:80]!r}", flush=True)
+        _log.info("generate_image  call=%d  model=%s  prompt=%r  has_ref=%s",
+                  _call_num, model, prompt[:80], reference_image_bytes is not None)
 
         parts = []
         if reference_image_bytes:
@@ -498,10 +505,18 @@ class GeminiClient:
         for candidate in (response.candidates or []):
             for part in candidate.content.parts:
                 if hasattr(part, "inline_data") and part.inline_data:
-                    _log.info("generate_image succeeded  model=%s  elapsed=%.2fs", model, elapsed)
-                    return part.inline_data.data
+                    _data = part.inline_data.data
+                    print(f"[generate_image EXIT]  call_num={_call_num}  "
+                          f"status=SUCCESS  bytes={len(_data):,}  elapsed={elapsed:.2f}s",
+                          flush=True)
+                    _log.info("generate_image succeeded  call=%d  model=%s  elapsed=%.2fs",
+                              _call_num, model, elapsed)
+                    return _data
 
         self._perf["errors"] += 1
+        print(f"[generate_image EXIT]  call_num={_call_num}  "
+              f"status=NO_IMAGE_DATA  candidates={len(response.candidates or [])}  "
+              f"elapsed={elapsed:.2f}s", flush=True)
         no_data_err = (
             f"Gemini returned no image data.\n"
             f"Model: {model}\n"

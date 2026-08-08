@@ -427,6 +427,18 @@ def render_nano_banana():
                 n = st.session_state.nb_angle_count
                 t0 = time.time()
 
+                # ── FORENSIC TRACE: Stage 1 — Button Click ────────────────
+                import sys as _sys
+                _trace = []
+                _trace.append(f"[TRACE] Button clicked")
+                _trace.append(f"[TRACE] nb_angle_slider = {st.session_state.get('nb_angle_slider', 'MISSING')}")
+                _trace.append(f"[TRACE] nb_angle_count  = {st.session_state.get('nb_angle_count', 'MISSING')}")
+                _trace.append(f"[TRACE] n (will use)    = {n}")
+                _trace.append(f"[TRACE] Branch          = {'MULTI-ANGLE' if n > 1 else 'SINGLE (n==1)'}")
+                for _tl in _trace:
+                    print(_tl, flush=True)
+                st.session_state["_nb_trace"] = _trace
+
                 if n == 1:
                     # ── Single background replacement (unchanged) ──────────
                     with st.spinner("Replacing background..."):
@@ -460,6 +472,15 @@ def render_nano_banana():
                     st.session_state.nb_packshot_product_desc = product_desc_bg
                     st.session_state.nb_angle_results = []
 
+                    # ── FORENSIC TRACE: Stage 2 — Multi-angle branch entered ──
+                    _t = st.session_state.get("_nb_trace", [])
+                    _t.append(f"[TRACE] MULTI-ANGLE branch entered. n={n}")
+                    _t.append(f"[TRACE] ref_bytes size = {len(ref_bytes):,}")
+                    _t.append(f"[TRACE] nb_packshot_results reset to []")
+                    for _tl in _t[-3:]:
+                        print(_tl, flush=True)
+                    st.session_state["_nb_trace"] = _t
+
                     prog = st.progress(0, text=f"Starting {n} generation jobs…")
 
                     # Single call — backend does all N API calls and logs everything
@@ -468,11 +489,11 @@ def render_nano_banana():
                             product_desc_bg, ref_bytes, count=n
                         )
                     except Exception as _init_err:
-                        # generate_packshot_angles raises BEFORE the loop if
-                        # api_key is missing or SDK is not installed.
-                        # Without this catch the button handler exits silently,
-                        # nb_packshot_results stays [], and the previous single-
-                        # image result is displayed instead of an error.
+                        _t = st.session_state.get("_nb_trace", [])
+                        _t.append(f"[TRACE] generate_packshot_angles RAISED: {_init_err}")
+                        for _tl in _t[-1:]:
+                            print(_tl, flush=True)
+                        st.session_state["_nb_trace"] = _t
                         st.session_state.nb_errors += 1
                         st.error(
                             f"**Packshot generation failed to start.**\n\n"
@@ -481,6 +502,25 @@ def render_nano_banana():
                             f"google-genai SDK is installed on Railway."
                         )
                         st.stop()
+
+                    # ── FORENSIC TRACE: Stage 3 — API returned ────────────────
+                    _raw_count  = len(raw_results)
+                    _raw_ok     = sum(1 for r in raw_results if r.get("bytes"))
+                    _raw_fail   = _raw_count - _raw_ok
+                    _raw_names  = [r["name"] for r in raw_results]
+                    _raw_errors = [(r["name"], r.get("error","")[:80])
+                                   for r in raw_results if not r.get("bytes")]
+                    _t = st.session_state.get("_nb_trace", [])
+                    _t.append(f"[TRACE] generate_packshot_angles RETURNED")
+                    _t.append(f"[TRACE] raw_results length  = {_raw_count}  (requested n={n})")
+                    _t.append(f"[TRACE] successful bytes    = {_raw_ok}")
+                    _t.append(f"[TRACE] failed              = {_raw_fail}")
+                    _t.append(f"[TRACE] angle names         = {_raw_names}")
+                    for _ef in _raw_errors:
+                        _t.append(f"[TRACE]   FAIL {_ef[0]}: {_ef[1]}")
+                    for _tl in _t[-(_raw_count + 6):]:
+                        print(_tl, flush=True)
+                    st.session_state["_nb_trace"] = _t
 
                     # Copy into session state and save history
                     for r in raw_results:
@@ -501,6 +541,17 @@ def render_nano_banana():
                         else:
                             st.session_state.nb_errors += 1
 
+                    # ── FORENSIC TRACE: Stage 4 — Session state populated ─────
+                    _ss_count = len(st.session_state.nb_packshot_results)
+                    _ss_ok    = sum(1 for r in st.session_state.nb_packshot_results
+                                    if r.get("bytes"))
+                    _t = st.session_state.get("_nb_trace", [])
+                    _t.append(f"[TRACE] nb_packshot_results after population = {_ss_count}")
+                    _t.append(f"[TRACE] with bytes                           = {_ss_ok}")
+                    for _tl in _t[-2:]:
+                        print(_tl, flush=True)
+                    st.session_state["_nb_trace"] = _t
+
                     elapsed = time.time() - t0
                     st.session_state.nb_gen_time += elapsed
                     good = sum(1 for r in raw_results if r.get("bytes"))
@@ -515,6 +566,14 @@ def render_nano_banana():
                     # Does NOT depend on st.rerun() or session-state timing.
                     _inline = st.session_state.nb_packshot_results
                     _good   = sum(1 for _r in _inline if _r.get("bytes"))
+
+                    # ── FORENSIC TRACE: Stage 5 — Gallery render ──────────────
+                    _t = st.session_state.get("_nb_trace", [])
+                    _t.append(f"[TRACE] INLINE GALLERY — rendering {len(_inline)} cards, {_good} with images")
+                    for _tl in _t[-1:]:
+                        print(_tl, flush=True)
+                    st.session_state["_nb_trace"] = _t
+
                     st.success(f"✅ Generated {_good}/{n} packshot angles in {elapsed:.1f}s")
                     st.markdown(f"### 📸 Generated Angles — {_good}/{n} succeeded")
                     if _get_image():
@@ -596,12 +655,28 @@ def render_nano_banana():
                                     )
                             except Exception:
                                 pass
+                    # ── FORENSIC TRACE: Stage 6 — ZIP ────────────────────────
+                    _z2_size = len(_z2) if '_z2' in dir() else 0
+                    _t = st.session_state.get("_nb_trace", [])
+                    _t.append(f"[TRACE] ZIP built  size={_z2_size:,} bytes  files={_good}")
+                    _t.append(f"[TRACE] PIPELINE COMPLETE")
+                    _t.append(f"[TRACE]   Selected={n} → API={_raw_count} → OK={_raw_ok} → Session={_ss_count} → Gallery={len(_inline)} → ZIP_files={_good}")
+                    for _tl in _t[-3:]:
+                        print(_tl, flush=True)
+                    st.session_state["_nb_trace"] = _t
+
                     st.caption(
                         f"Selected Angles={n} | Jobs Created={n} | "
                         f"API Calls={n} | Images Returned={len(raw_results)} | "
                         f"Images Stored={len(_inline)} | Images Rendered={_good} | "
                         f"ZIP Files={_good}"
                     )
+
+                    # ── FORENSIC TRACE EXPANDER ───────────────────────────────
+                    with st.expander("🔍 Pipeline Debug Trace", expanded=True):
+                        st.markdown("**Full pipeline trace — every count at every stage:**")
+                        for _tline in st.session_state.get("_nb_trace", []):
+                            st.code(_tline, language=None)
 
         # ── Show single-BG result ─────────────────────────────────────────
         if st.session_state.nb_result and st.session_state.nb_result_mode == "background":
