@@ -61,6 +61,9 @@ def build_model_prompt(
     return (
         f"Professional fashion model photography, {gender.lower()} model, "
         f"age range {age}, {ethnicity} ethnicity, {style} style{product_part}. "
+        "CRITICAL — preserve the product from the reference image EXACTLY: "
+        "same color, same pattern, same print, same logo, same branding, same design — "
+        "do NOT change or reinterpret the product's appearance in any way. "
         "Photorealistic, commercial quality, clean studio or lifestyle background, "
         "professional lighting, high resolution, fashion catalog quality."
     )

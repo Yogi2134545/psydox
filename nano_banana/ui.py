@@ -597,7 +597,8 @@ def render_nano_banana():
                                          placeholder="e.g. Nike Air Max sneaker")
 
 
-        n = st.session_state.nb_angle_count
+        # Read directly from slider widget key so n is always current
+        n = int(st.session_state.get("nb_angle_slider", 1))
         btn_label = ("🎨 Replace Background" if n == 1
                      else f"📸 Generate {n} Packshot Angles")
         if st.button(btn_label, key="nb_bg_btn", type="primary"):
