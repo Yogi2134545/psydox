@@ -1614,10 +1614,8 @@ def render_nano_banana():
                                     f"`{', '.join(im)}`")
                     all_m = env.get("all_models", [])
                     if all_m:
-                        with st.expander(f"All accessible models ({len(all_m)})",
-                                         expanded=False):
-                            for m in sorted(all_m):
-                                st.text(m)
+                        st.markdown(f"**All accessible models ({len(all_m)}):**")
+                        st.code("\n".join(sorted(all_m)), language=None)
 
                 # ── Summary counts ────────────────────────────────────────────
                 sv, sf, sn = len(v_list), len(f_list), len(n_list)
