@@ -76,6 +76,160 @@ def _show_before_after(original: Image.Image, result: Image.Image, labels=("Orig
         st.caption(f"{result.width}×{result.height}px")
 
 
+# ── Output Ratio ─────────────────────────────────────────────────────────────
+_RATIO_OPTIONS = {
+    "Original":           None,
+    "1:1  (1080×1080)":   (1080, 1080),
+    "4:5  (1080×1350)":   (1080, 1350),
+    "3:4  (810×1080)":    (810,  1080),
+    "9:16 (1080×1920)":   (1080, 1920),
+    "16:9 (1920×1080)":   (1920, 1080),
+    "2:3  (720×1080)":    (720,  1080),
+    "3:2  (1080×720)":    (1080, 720),
+    "Custom W×H":         "custom",
+}
+
+
+def _apply_ratio(src, target_wh) -> bytes:
+    """Fit-inside + white-pad src (PIL.Image or bytes) to target_wh. Returns JPEG bytes."""
+    try:
+        from PIL import Image as _PIL
+        img = (_PIL.open(io.BytesIO(src)) if isinstance(src, bytes) else src).convert("RGB")
+        if target_wh:
+            tw, th = target_wh
+            img.thumbnail((tw, th), _PIL.LANCZOS)
+            canvas = _PIL.new("RGB", (tw, th), (255, 255, 255))
+            canvas.paste(img, ((tw - img.width) // 2, (th - img.height) // 2))
+            img = canvas
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=92)
+        return buf.getvalue()
+    except Exception:
+        if isinstance(src, bytes):
+            return src
+        try:
+            buf = io.BytesIO()
+            src.convert("RGB").save(buf, "JPEG", quality=92)
+            return buf.getvalue()
+        except Exception:
+            return b""
+
+
+def _ratio_to_pil(src, target_wh) -> Image.Image:
+    """Apply ratio and return PIL Image."""
+    data = _apply_ratio(src, target_wh)
+    return Image.open(io.BytesIO(data)).convert("RGB")
+
+
+def _ratio_prompt_suffix(ratio_label: str, target_wh) -> str:
+    """Prompt suffix for the selected ratio."""
+    if not target_wh:
+        return ""
+    tw, th = target_wh
+    short = ratio_label.split("(")[0].strip()
+    return (
+        f"\nAspect Ratio: {short}. "
+        f"Resolution: {tw}×{th}. "
+        "Maintain composition without cropping the product."
+    )
+
+
+def _show_packshot_gallery(results: list, engine, product_desc: str, ref_bytes: bytes, key_prefix: str):
+    """Render a packshot gallery with per-image download + regenerate, plus ZIP/sheet/PDF export."""
+    from .api_client import ANGLE_VIEWS as _AV, _build_angle_prompt as _bap
+    good_n  = sum(1 for r in results if r.get("bytes"))
+    total_n = len(results)
+
+    if not results:
+        return
+
+    orig = _get_image()
+    if orig:
+        _c = st.columns([1, 4])
+        with _c[0]:
+            st.markdown("**Original**")
+            st.image(orig, use_container_width=True)
+
+    st.markdown("**Generated Angles**")
+    st.markdown("---")
+
+    cols_per_row = 3
+    for _rs in range(0, total_n, cols_per_row):
+        _row = results[_rs:_rs + cols_per_row]
+        _rc  = st.columns(cols_per_row)
+        for _ci, _item in enumerate(_row):
+            _idx = _rs + _ci
+            with _rc[_ci]:
+                st.markdown(f"**{_item['name']}**")
+                if _item.get("bytes"):
+                    st.image(_item["bytes"], use_container_width=True)
+                    st.download_button(
+                        f"⬇ {_item['label']}.jpg",
+                        data=_item["bytes"],
+                        file_name=f"{_item['key']}.jpg",
+                        mime="image/jpeg",
+                        key=f"{key_prefix}_dl_{_item['key']}",
+                        use_container_width=True,
+                    )
+                else:
+                    st.error("Failed")
+                    if _item.get("error"):
+                        st.caption(_item["error"][:120])
+                if ref_bytes and st.button("🔄 Retry", key=f"{key_prefix}_regen_{_item['key']}",
+                                           use_container_width=True):
+                    with st.spinner(f"Regenerating {_item['name']}…"):
+                        try:
+                            _ad = next((a for a in _AV if a["key"] == _item["key"]), None)
+                            if _ad:
+                                _nb = engine.client.generate_image(_bap(product_desc, _ad), ref_bytes)
+                                results[_idx]["bytes"] = _nb
+                                results[_idx]["error"] = None
+                                st.session_state.nb_packshot_results = results
+                        except Exception as _re:
+                            results[_idx]["error"] = str(_re)
+                            st.session_state.nb_packshot_results = results
+                    st.rerun()
+
+    st.markdown("---")
+    if good_n > 0:
+        st.markdown("#### ⬇ Export")
+        _ec1, _ec2, _ec3 = st.columns(3)
+        with _ec1:
+            _zip = _build_packshot_zip(results)
+            st.download_button(
+                f"📦 ZIP ({good_n} images)",
+                data=_zip, file_name="psydox_packshot.zip",
+                mime="application/zip", use_container_width=True,
+                key=f"{key_prefix}_zip",
+            )
+            st.caption("Contains: " + ", ".join(r["key"] + ".jpg" for r in results if r.get("bytes")))
+        with _ec2:
+            _sh = _build_contact_sheet(results)
+            if _sh:
+                st.download_button(
+                    "🖼 Contact Sheet",
+                    data=_sh, file_name="psydox_contact_sheet.jpg",
+                    mime="image/jpeg", use_container_width=True,
+                    key=f"{key_prefix}_sheet",
+                )
+                st.image(_sh, caption="Contact Sheet", use_container_width=True)
+        with _ec3:
+            try:
+                from PIL import Image as _PPIL
+                _pi = [_PPIL.open(io.BytesIO(r["bytes"])).convert("RGB") for r in results if r.get("bytes")]
+                if _pi:
+                    _pb = io.BytesIO()
+                    _pi[0].save(_pb, format="PDF", save_all=True, append_images=_pi[1:])
+                    st.download_button(
+                        "📄 PDF",
+                        data=_pb.getvalue(), file_name="psydox_packshot.pdf",
+                        mime="application/pdf", use_container_width=True,
+                        key=f"{key_prefix}_pdf",
+                    )
+            except Exception:
+                pass
+
+
 def _show_angle_grid(results: list, labels: list = None):
     """Show multiple angle results in a 2-column grid with individual download buttons."""
     if not results:
@@ -266,11 +420,13 @@ def _process_zip_batch(zip_bytes: bytes, config: dict, engine, progress_cb=None)
                 mode = config.get("mode", "background")
                 bg_opt = config.get("background_option", "White")
 
+                _batch_ratio = config.get("ratio_wh")
                 if n_angles == 1:
                     result_img = engine.bg_gen.replace_background(img, bg_opt, "", "")
                     out_ib = io.BytesIO()
                     result_img.convert("RGB").save(out_ib, format="JPEG", quality=90)
-                    zout.writestr(f"{stem}_result.jpg", out_ib.getvalue())
+                    final_bytes = _apply_ratio(out_ib.getvalue(), _batch_ratio)
+                    zout.writestr(f"{stem}_result.jpg", final_bytes)
                     success += 1
                     done += 1
                 else:
@@ -278,7 +434,7 @@ def _process_zip_batch(zip_bytes: bytes, config: dict, engine, progress_cb=None)
                     angle_results = engine.client.generate_angles(base_prompt, ref_bytes, count=n_angles)
                     for ai, ab in enumerate(angle_results):
                         if ab is not None:
-                            zout.writestr(f"{stem}_angle{ai + 1}.jpg", ab)
+                            zout.writestr(f"{stem}_angle{ai + 1}.jpg", _apply_ratio(ab, _batch_ratio))
                             success += 1
                         else:
                             failed += 1
@@ -386,6 +542,29 @@ def render_nano_banana():
             "ZIP + contact sheet download included."
         )
 
+    # ── Output Ratio selector ─────────────────────────────────────────────────
+    st.markdown("#### 📐 Output Ratio")
+    _ro_c1, _ro_c2 = st.columns([3, 2])
+    with _ro_c1:
+        ratio_label = st.selectbox(
+            "Output Ratio",
+            list(_RATIO_OPTIONS.keys()),
+            key="nb_ratio_label",
+            label_visibility="collapsed",
+            help="Applied to every generated image across all features.",
+        )
+    ratio_wh = _RATIO_OPTIONS.get(ratio_label)
+    if ratio_wh == "custom":
+        with _ro_c2:
+            _cw_col, _ch_col = st.columns(2)
+            _cw = _cw_col.number_input("W px", 100, 4320, 1080, key="nb_ratio_cw", label_visibility="collapsed")
+            _ch = _ch_col.number_input("H px", 100, 5400, 1350, key="nb_ratio_ch", label_visibility="collapsed")
+        ratio_wh = (int(_cw), int(_ch))
+    elif ratio_wh:
+        with _ro_c2:
+            tw, th = ratio_wh
+            st.info(f"**{tw}×{th}px**", icon="📐")
+
     st.markdown("---")
 
     # ── Tabs ──────────────────────────────────────────────────────────────────
@@ -417,165 +596,84 @@ def render_nano_banana():
         product_desc_bg = st.text_input("Product Description (optional)", key="nb_pd_bg",
                                          placeholder="e.g. Nike Air Max sneaker")
 
-        # ── Output Ratio selector (shown for multi-angle) ─────────────────
-        _RATIOS = {
-            "Original (keep as-is)":  None,
-            "Square 1:1  (1080×1080)": (1080, 1080),
-            "Portrait 4:5  (1080×1350)": (1080, 1350),
-            "Portrait 9:16  (1080×1920)": (1080, 1920),
-            "Landscape 16:9  (1920×1080)": (1920, 1080),
-            "Standard 3:4  (810×1080)": (810, 1080),
-            "Wide 3:2  (1080×720)": (1080, 720),
-        }
-        if st.session_state.nb_angle_count > 1:
-            ratio_choice = st.selectbox(
-                "📐 Output Ratio",
-                list(_RATIOS.keys()),
-                key="nb_ratio_choice",
-                help="All generated images will be resized/padded to this ratio before download.",
-            )
-        else:
-            ratio_choice = "Original (keep as-is)"
 
-        btn_label = ("🎨 Replace Background"
-                     if st.session_state.nb_angle_count == 1
-                     else f"📸 Generate {st.session_state.nb_angle_count} Packshot Angles")
+        n = st.session_state.nb_angle_count
+        btn_label = ("🎨 Replace Background" if n == 1
+                     else f"📸 Generate {n} Packshot Angles")
         if st.button(btn_label, key="nb_bg_btn", type="primary"):
             img = _get_image()
             if not img:
                 st.warning("Please upload a product image first.")
             else:
-                n = st.session_state.nb_angle_count
                 t0 = time.time()
-
-                # ── FORENSIC TRACE: Stage 1 — Button Click ────────────────
-                import sys as _sys
-                _trace = []
-                _trace.append(f"[TRACE] Button clicked")
-                _trace.append(f"[TRACE] nb_angle_slider = {st.session_state.get('nb_angle_slider', 'MISSING')}")
-                _trace.append(f"[TRACE] nb_angle_count  = {st.session_state.get('nb_angle_count', 'MISSING')}")
-                _trace.append(f"[TRACE] n (will use)    = {n}")
-                _trace.append(f"[TRACE] Branch          = {'MULTI-ANGLE' if n > 1 else 'SINGLE (n==1)'}")
-                for _tl in _trace:
-                    print(_tl, flush=True)
-                st.session_state["_nb_trace"] = _trace
-
                 if n == 1:
-                    # ── Single background replacement (unchanged) ──────────
-                    with st.spinner("Replacing background..."):
+                    # ── Single background replacement ──────────────────────
+                    with st.spinner("Replacing background…"):
                         try:
                             result = engine.bg_gen.replace_background(
                                 img, bg_choice, custom_bg, product_desc_bg
                             )
+                            result = _ratio_to_pil(result, ratio_wh)
                             elapsed = time.time() - t0
                             st.session_state.nb_api_calls += 1
                             st.session_state.nb_gen_time += elapsed
-                            prompt = f"Background: {bg_choice}"
+                            prompt = (f"Background: {bg_choice}"
+                                      + _ratio_prompt_suffix(ratio_label, ratio_wh))
                             _set_result(result, prompt, "background")
                             history.add("Background", img, result, prompt)
-                            st.session_state.nb_angle_results = []
                             st.session_state.nb_packshot_results = []
                             st.success(f"Done in {elapsed:.1f}s")
                             _show_before_after(img, result)
                         except Exception as e:
                             st.session_state.nb_errors += 1
                             st.error(f"Error: {e}")
-
                 else:
-                    # ── Multi-angle packshot via instrumented backend ──────────
+                    # ── Multi-angle packshot ────────────────────────────────
                     buf = io.BytesIO()
                     img.convert("RGB").save(buf, format="JPEG", quality=90)
                     ref_bytes = buf.getvalue()
-
-                    # Reset and store ref for per-angle regeneration
                     st.session_state.nb_packshot_results = []
                     st.session_state.nb_packshot_ref_bytes = ref_bytes
                     st.session_state.nb_packshot_product_desc = product_desc_bg
-                    st.session_state.nb_angle_results = []
 
-                    # ── FORENSIC TRACE: Stage 2 — Multi-angle branch entered ──
-                    _t = st.session_state.get("_nb_trace", [])
-                    _t.append(f"[TRACE] MULTI-ANGLE branch entered. n={n}")
-                    _t.append(f"[TRACE] ref_bytes size = {len(ref_bytes):,}")
-                    _t.append(f"[TRACE] nb_packshot_results reset to []")
-                    for _tl in _t[-3:]:
-                        print(_tl, flush=True)
-                    st.session_state["_nb_trace"] = _t
+                    from .api_client import ANGLE_VIEWS, _build_angle_prompt
+                    selected_angles = ANGLE_VIEWS[:n]
+                    prog = st.progress(0.0, text=f"Generating angle 1/{n}…")
+                    raw_results = []
 
-                    prog = st.progress(0, text=f"Starting {n} generation jobs…")
+                    for _ai, _angle in enumerate(selected_angles):
+                        prog.progress(float(_ai) / n,
+                                      text=f"Generating {_angle['name']} ({_ai+1}/{n})…")
+                        _prompt = _build_angle_prompt(product_desc_bg, _angle)
+                        if ratio_wh:
+                            _prompt += _ratio_prompt_suffix(ratio_label, ratio_wh)
+                        try:
+                            _img_bytes = engine.client.generate_image(_prompt, ref_bytes)
+                            _img_bytes = _apply_ratio(_img_bytes, ratio_wh)
+                            raw_results.append({
+                                "name": _angle["name"], "label": _angle["label"],
+                                "key": _angle["key"], "bytes": _img_bytes, "error": None,
+                            })
+                        except Exception as _e:
+                            raw_results.append({
+                                "name": _angle["name"], "label": _angle["label"],
+                                "key": _angle["key"], "bytes": None, "error": str(_e),
+                            })
 
-                    # Single call — backend does all N API calls and logs everything
-                    try:
-                        raw_results = engine.client.generate_packshot_angles(
-                            product_desc_bg, ref_bytes, count=n
-                        )
-                    except Exception as _init_err:
-                        _t = st.session_state.get("_nb_trace", [])
-                        _t.append(f"[TRACE] generate_packshot_angles RAISED: {_init_err}")
-                        for _tl in _t[-1:]:
-                            print(_tl, flush=True)
-                        st.session_state["_nb_trace"] = _t
-                        st.session_state.nb_errors += 1
-                        st.error(
-                            f"**Packshot generation failed to start.**\n\n"
-                            f"Error: `{_init_err}`\n\n"
-                            f"Check that GOOGLE_API_KEY is set and the "
-                            f"google-genai SDK is installed on Railway."
-                        )
-                        st.stop()
+                    elapsed = time.time() - t0
+                    good = sum(1 for r in raw_results if r.get("bytes"))
+                    prog.progress(1.0, text=f"✅ Done: {good}/{n} in {elapsed:.1f}s")
 
-                    # ── FORENSIC TRACE: Stage 3 — API returned ────────────────
-                    _raw_count  = len(raw_results)
-                    _raw_ok     = sum(1 for r in raw_results if r.get("bytes"))
-                    _raw_fail   = _raw_count - _raw_ok
-                    _raw_names  = [r["name"] for r in raw_results]
-                    _raw_errors = [(r["name"], r.get("error","")[:80])
-                                   for r in raw_results if not r.get("bytes")]
-                    _t = st.session_state.get("_nb_trace", [])
-                    _t.append(f"[TRACE] generate_packshot_angles RETURNED")
-                    _t.append(f"[TRACE] raw_results length  = {_raw_count}  (requested n={n})")
-                    _t.append(f"[TRACE] successful bytes    = {_raw_ok}")
-                    _t.append(f"[TRACE] failed              = {_raw_fail}")
-                    _t.append(f"[TRACE] angle names         = {_raw_names}")
-                    for _ef in _raw_errors:
-                        _t.append(f"[TRACE]   FAIL {_ef[0]}: {_ef[1]}")
-                    for _tl in _t[-(_raw_count + 6):]:
-                        print(_tl, flush=True)
-                    st.session_state["_nb_trace"] = _t
-
-                    # ── Apply output ratio to each successful image ───────────
-                    _target_size = _RATIOS.get(ratio_choice)
-                    if _target_size:
-                        from PIL import Image as _PILr
-                        _tw, _th = _target_size
-                        for _ri, _r in enumerate(raw_results):
-                            if not _r.get("bytes"):
-                                continue
-                            try:
-                                _src = _PILr.open(io.BytesIO(_r["bytes"])).convert("RGB")
-                                # Fit inside target, then pad with white
-                                _src.thumbnail((_tw, _th), _PILr.LANCZOS)
-                                _canvas = _PILr.new("RGB", (_tw, _th), (255, 255, 255))
-                                _ox = (_tw - _src.width) // 2
-                                _oy = (_th - _src.height) // 2
-                                _canvas.paste(_src, (_ox, _oy))
-                                _buf = io.BytesIO()
-                                _canvas.save(_buf, format="JPEG", quality=92)
-                                raw_results[_ri]["bytes"] = _buf.getvalue()
-                            except Exception as _re:
-                                pass  # keep original bytes if resize fails
-
-                    # Copy into session state and save history
                     for r in raw_results:
                         st.session_state.nb_packshot_results.append(r)
                         if r.get("bytes"):
                             try:
                                 from PIL import Image as _PIL
-                                result_img = _PIL.open(io.BytesIO(r["bytes"]))
                                 history.add(
                                     f"Packshot: {r['name']}",
-                                    img, result_img,
-                                    f"{r['name']} — {product_desc_bg}",
+                                    img, _PIL.open(io.BytesIO(r["bytes"])).convert("RGB"),
+                                    f"{r['name']} — {product_desc_bg}"
+                                    + _ratio_prompt_suffix(ratio_label, ratio_wh),
                                     "Gemini",
                                 )
                             except Exception:
@@ -583,298 +681,35 @@ def render_nano_banana():
                             st.session_state.nb_api_calls += 1
                         else:
                             st.session_state.nb_errors += 1
-
-                    # ── FORENSIC TRACE: Stage 4 — Session state populated ─────
-                    _ss_count = len(st.session_state.nb_packshot_results)
-                    _ss_ok    = sum(1 for r in st.session_state.nb_packshot_results
-                                    if r.get("bytes"))
-                    _t = st.session_state.get("_nb_trace", [])
-                    _t.append(f"[TRACE] nb_packshot_results after population = {_ss_count}")
-                    _t.append(f"[TRACE] with bytes                           = {_ss_ok}")
-                    for _tl in _t[-2:]:
-                        print(_tl, flush=True)
-                    st.session_state["_nb_trace"] = _t
-
-                    elapsed = time.time() - t0
                     st.session_state.nb_gen_time += elapsed
-                    good = sum(1 for r in raw_results if r.get("bytes"))
-                    prog.progress(1.0,
-                                  text=f"✅ Done: {good}/{n} images in {elapsed:.1f}s")
 
-                    # Mark that gallery was rendered inline this run
-                    # so the persistent display section below does not double-render
+                    _ratio_tag = (f"  ·  {ratio_label}" if ratio_wh else "")
+                    st.success(f"✅ Generated {good}/{n} packshot angles in {elapsed:.1f}s")
                     st.session_state._nb_inline_rendered = True
-
-                    # ── Inline gallery (rendered immediately, same script run) ──
-                    # Does NOT depend on st.rerun() or session-state timing.
-                    _inline = st.session_state.nb_packshot_results
-                    _good   = sum(1 for _r in _inline if _r.get("bytes"))
-
-                    # ── FORENSIC TRACE: Stage 5 — Gallery render ──────────────
-                    _t = st.session_state.get("_nb_trace", [])
-                    _t.append(f"[TRACE] INLINE GALLERY — rendering {len(_inline)} cards, {_good} with images")
-                    for _tl in _t[-1:]:
-                        print(_tl, flush=True)
-                    st.session_state["_nb_trace"] = _t
-
-                    st.success(f"✅ Generated {_good}/{n} packshot angles in {elapsed:.1f}s")
-                    st.markdown(f"### 📸 Generated Angles — {_good}/{n} succeeded")
-                    if _get_image():
-                        _ic = st.columns([1, 3])
-                        with _ic[0]:
-                            st.markdown("**Original**")
-                            st.image(_get_image(), use_container_width=True)
-                    st.markdown("**Generated Images**")
-                    st.markdown("---")
-                    _cols3 = 3
-                    for _rs in range(0, len(_inline), _cols3):
-                        _row = _inline[_rs:_rs + _cols3]
-                        _rc  = st.columns(_cols3)
-                        for _ci2, _item2 in enumerate(_row):
-                            with _rc[_ci2]:
-                                st.markdown(f"**{_item2['name']}**")
-                                if _item2.get("bytes"):
-                                    st.image(_item2["bytes"], use_container_width=True)
-                                    st.download_button(
-                                        f"⬇ {_item2['label']}.jpg",
-                                        data=_item2["bytes"],
-                                        file_name=f"{_item2['key']}.jpg",
-                                        mime="image/jpeg",
-                                        key=f"nb_inline_dl_{_item2['key']}",
-                                        use_container_width=True,
-                                    )
-                                else:
-                                    st.error("Failed")
-                                    if _item2.get("error"):
-                                        st.caption(_item2["error"][:120])
-                    st.markdown("---")
-                    if _good > 0:
-                        st.markdown("#### ⬇ Export")
-                        _xc1, _xc2, _xc3 = st.columns(3)
-                        with _xc1:
-                            _z2 = _build_packshot_zip(_inline)
-                            st.download_button(
-                                f"📦 ZIP ({_good} images)",
-                                data=_z2,
-                                file_name="psydox_packshot.zip",
-                                mime="application/zip",
-                                use_container_width=True,
-                                key="nb_inline_zip",
-                            )
-                            st.caption("Contains: " + ", ".join(
-                                _r["key"] + ".jpg" for _r in _inline if _r.get("bytes")
-                            ))
-                        with _xc2:
-                            _sh2 = _build_contact_sheet(_inline)
-                            if _sh2:
-                                st.download_button(
-                                    "🖼 Contact Sheet",
-                                    data=_sh2,
-                                    file_name="contact_sheet.jpg",
-                                    mime="image/jpeg",
-                                    use_container_width=True,
-                                    key="nb_inline_sheet",
-                                )
-                                st.image(_sh2, caption="Contact Sheet",
-                                         use_container_width=True)
-                        with _xc3:
-                            try:
-                                from PIL import Image as _PPIL2
-                                _pi2 = [
-                                    _PPIL2.open(io.BytesIO(_r["bytes"])).convert("RGB")
-                                    for _r in _inline if _r.get("bytes")
-                                ]
-                                if _pi2:
-                                    _pb2 = io.BytesIO()
-                                    _pi2[0].save(_pb2, format="PDF", save_all=True,
-                                                 append_images=_pi2[1:])
-                                    st.download_button(
-                                        "📄 PDF",
-                                        data=_pb2.getvalue(),
-                                        file_name="psydox_packshot.pdf",
-                                        mime="application/pdf",
-                                        use_container_width=True,
-                                        key="nb_inline_pdf",
-                                    )
-                            except Exception:
-                                pass
-                    # ── FORENSIC TRACE: Stage 6 — ZIP ────────────────────────
-                    _z2_size = len(_z2) if '_z2' in dir() else 0
-                    _t = st.session_state.get("_nb_trace", [])
-                    _t.append(f"[TRACE] ZIP built  size={_z2_size:,} bytes  files={_good}")
-                    _t.append(f"[TRACE] PIPELINE COMPLETE")
-                    _t.append(f"[TRACE]   Selected={n} → API={_raw_count} → OK={_raw_ok} → Session={_ss_count} → Gallery={len(_inline)} → ZIP_files={_good}")
-                    for _tl in _t[-3:]:
-                        print(_tl, flush=True)
-                    st.session_state["_nb_trace"] = _t
-
-                    st.caption(
-                        f"Selected Angles={n} | Jobs Created={n} | "
-                        f"API Calls={n} | Images Returned={len(raw_results)} | "
-                        f"Images Stored={len(_inline)} | Images Rendered={_good} | "
-                        f"ZIP Files={_good}"
+                    st.markdown(f"### 📸 Generated Angles — {good}/{n}{_ratio_tag}")
+                    _show_packshot_gallery(
+                        st.session_state.nb_packshot_results,
+                        engine, product_desc_bg, ref_bytes, "nb_inline",
                     )
-
-                    # ── FORENSIC TRACE EXPANDER ───────────────────────────────
-                    with st.expander("🔍 Pipeline Debug Trace", expanded=True):
-                        st.markdown("**Full pipeline trace — every count at every stage:**")
-                        for _tline in st.session_state.get("_nb_trace", []):
-                            st.code(_tline, language=None)
 
         # ── Show single-BG result ─────────────────────────────────────────
         if st.session_state.nb_result and st.session_state.nb_result_mode == "background":
             if not st.session_state.nb_packshot_results:
                 _show_before_after(_get_image(), st.session_state.nb_result)
 
-        # ── Packshot gallery ──────────────────────────────────────────────
-        # Skip if the inline gallery already rendered this script run
-        # (flag is set in the button handler above and consumed once here).
-        _just_rendered = st.session_state.get("_nb_inline_rendered", False)
-        if _just_rendered:
-            try:
-                del st.session_state["_nb_inline_rendered"]
-            except Exception:
-                pass
-        ps_results = st.session_state.nb_packshot_results   # always a list
+        # ── Persistent packshot gallery (reruns after button-click run) ───
+        _just_rendered = st.session_state.pop("_nb_inline_rendered", False)
+        ps_results = st.session_state.nb_packshot_results
         if ps_results and not _just_rendered:
             good_n  = sum(1 for r in ps_results if r.get("bytes"))
             total_n = len(ps_results)
-
-            st.markdown(f"### 📸 Generated Angles — {good_n}/{total_n} succeeded")
-
-            # ── Original ──────────────────────────────────────────────────
-            orig = _get_image()
-            if orig:
-                st.markdown("**Original**")
-                _c = st.columns([1, 3])
-                with _c[0]:
-                    st.image(orig, use_container_width=True)
-            st.markdown("**Generated Images**")
-            st.markdown("---")
-
-            # ── Per-angle cards ───────────────────────────────────────────
-            from .api_client import _build_angle_prompt as _bap
-            _ref  = st.session_state.nb_packshot_ref_bytes
-            _desc = st.session_state.nb_packshot_product_desc
-
-            cols_per_row = 3
-            for _row_start in range(0, total_n, cols_per_row):
-                _row_items = ps_results[_row_start:_row_start + cols_per_row]
-                _cols = st.columns(cols_per_row)
-                for _ci, _item in enumerate(_row_items):
-                    _idx = _row_start + _ci
-                    with _cols[_ci]:
-                        st.markdown(f"**{_item['name']}**")
-                        if _item.get("bytes"):
-                            st.image(_item["bytes"], use_container_width=True)
-                            st.download_button(
-                                f"⬇ {_item['label']}.jpg",
-                                data=_item["bytes"],
-                                file_name=f"{_item['key']}.jpg",
-                                mime="image/jpeg",
-                                key=f"nb_dl_ps_{_item['key']}",
-                                use_container_width=True,
-                            )
-                        else:
-                            st.error(f"Failed")
-                            if _item.get("error"):
-                                st.caption(_item["error"][:120])
-                        # ── Regenerate single angle ──────────────────
-                        if st.button(
-                            f"🔄 Regenerate",
-                            key=f"nb_regen_{_item['key']}",
-                            use_container_width=True,
-                        ) and _ref:
-                            with st.spinner(f"Regenerating {_item['name']}…"):
-                                try:
-                                    from .api_client import ANGLE_VIEWS as _AV2
-                                    _angle_def = next(
-                                        (a for a in _AV2 if a["key"] == _item["key"]),
-                                        None,
-                                    )
-                                    if _angle_def:
-                                        _new_bytes = engine.client.generate_image(
-                                            _bap(_desc, _angle_def), _ref
-                                        )
-                                        ps_results[_idx]["bytes"] = _new_bytes
-                                        ps_results[_idx]["error"] = None
-                                        st.session_state.nb_packshot_results = ps_results
-                                except Exception as _rex:
-                                    ps_results[_idx]["error"] = str(_rex)
-                                    st.session_state.nb_packshot_results = ps_results
-                            st.rerun()
-
-            st.markdown("---")
-
-            # ── Export section ────────────────────────────────────────────
-            if good_n > 0:
-                st.markdown("#### ⬇ Export")
-                _ec1, _ec2, _ec3 = st.columns(3)
-
-                with _ec1:
-                    _zip = _build_packshot_zip(ps_results)
-                    st.download_button(
-                        f"📦 ZIP ({good_n} images)",
-                        data=_zip,
-                        file_name="psydox_packshot.zip",
-                        mime="application/zip",
-                        use_container_width=True,
-                        key="nb_ps_zip_dl",
-                    )
-                    st.caption(
-                        "Contains: "
-                        + ", ".join(
-                            r["key"] + ".jpg"
-                            for r in ps_results
-                            if r.get("bytes")
-                        )
-                    )
-
-                with _ec2:
-                    _sheet = _build_contact_sheet(ps_results)
-                    if _sheet:
-                        st.download_button(
-                            "🖼 Contact Sheet (JPG)",
-                            data=_sheet,
-                            file_name="psydox_contact_sheet.jpg",
-                            mime="image/jpeg",
-                            use_container_width=True,
-                            key="nb_ps_sheet_dl",
-                        )
-                        st.image(_sheet, caption="Contact Sheet preview",
-                                 use_container_width=True)
-
-                with _ec3:
-                    try:
-                        from PIL import Image as _PPIL
-                        _pdf_imgs = [
-                            _PPIL.open(io.BytesIO(r["bytes"])).convert("RGB")
-                            for r in ps_results if r.get("bytes")
-                        ]
-                        if _pdf_imgs:
-                            _pdf_buf = io.BytesIO()
-                            _pdf_imgs[0].save(
-                                _pdf_buf, format="PDF", save_all=True,
-                                append_images=_pdf_imgs[1:],
-                            )
-                            st.download_button(
-                                "📄 PDF (all angles)",
-                                data=_pdf_buf.getvalue(),
-                                file_name="psydox_packshot.pdf",
-                                mime="application/pdf",
-                                use_container_width=True,
-                                key="nb_ps_pdf_dl",
-                            )
-                    except Exception:
-                        pass
-
-            # ── Debug counters (always visible) ───────────────────────────
-            st.caption(
-                f"Debug — Selected Angles: {total_n} | "
-                f"Jobs Created: {total_n} | "
-                f"Images Stored: {total_n} | "
-                f"Images Rendered: {good_n} | "
-                f"ZIP Files: {good_n}"
+            _ratio_tag = (f"  ·  {ratio_label}" if ratio_wh else "")
+            st.markdown(f"### 📸 Generated Angles — {good_n}/{total_n}{_ratio_tag}")
+            _show_packshot_gallery(
+                ps_results, engine,
+                st.session_state.nb_packshot_product_desc,
+                st.session_state.nb_packshot_ref_bytes,
+                "nb_ps",
             )
 
     # ── Tab 2: Lifestyle ──────────────────────────────────────────────────────
@@ -898,10 +733,12 @@ def render_nano_banana():
                         result = engine.lifestyle_gen.generate(
                             img, lifestyle_style, custom_ls, product_desc_ls
                         )
+                        result = _ratio_to_pil(result, ratio_wh)
                         elapsed = time.time() - t0
                         st.session_state.nb_api_calls += 1
                         st.session_state.nb_gen_time += elapsed
-                        prompt = f"Lifestyle: {lifestyle_style}"
+                        prompt = (f"Lifestyle: {lifestyle_style}"
+                                  + _ratio_prompt_suffix(ratio_label, ratio_wh))
                         _set_result(result, prompt, "lifestyle")
                         history.add("Lifestyle", img, result, prompt)
                         st.success(f"Done in {elapsed:.1f}s")
@@ -937,10 +774,12 @@ def render_nano_banana():
                         result = engine.model_gen.generate(
                             img, gender, age_group, ethnicity, clothing_style, product_desc_m
                         )
+                        result = _ratio_to_pil(result, ratio_wh)
                         elapsed = time.time() - t0
                         st.session_state.nb_api_calls += 1
                         st.session_state.nb_gen_time += elapsed
-                        prompt = f"Model: {gender}, {age_group}, {ethnicity}, {clothing_style}"
+                        prompt = (f"Model: {gender}, {age_group}, {ethnicity}, {clothing_style}"
+                                  + _ratio_prompt_suffix(ratio_label, ratio_wh))
                         _set_result(result, prompt, "model")
                         history.add("Model", img, result, prompt)
                         st.success(f"Done in {elapsed:.1f}s")
@@ -1023,9 +862,11 @@ def render_nano_banana():
                             else:
                                 result = engine.editor.apply_ai_finish(result, ai_finish)
                                 st.session_state.nb_api_calls += 1
+                        result = _ratio_to_pil(result, ratio_wh)
                         elapsed = time.time() - t0
                         st.session_state.nb_gen_time += elapsed
-                        prompt = f"Edit: brightness={brightness}, contrast={contrast}, ai_finish={ai_finish}"
+                        prompt = (f"Edit: brightness={brightness}, contrast={contrast}, ai_finish={ai_finish}"
+                                  + _ratio_prompt_suffix(ratio_label, ratio_wh))
                         _set_result(result, prompt, "edit")
                         history.add("Edit", img, result, prompt)
                         st.success(f"Done in {elapsed:.1f}s")
@@ -1058,10 +899,12 @@ def render_nano_banana():
                     t0 = time.time()
                     try:
                         result = engine.enhancer.enhance(img, enhancements, product_desc_enh)
+                        result = _ratio_to_pil(result, ratio_wh)
                         elapsed = time.time() - t0
                         st.session_state.nb_api_calls += 1
                         st.session_state.nb_gen_time += elapsed
-                        prompt = f"Enhance: {', '.join(enhancements)}"
+                        prompt = (f"Enhance: {', '.join(enhancements)}"
+                                  + _ratio_prompt_suffix(ratio_label, ratio_wh))
                         _set_result(result, prompt, "enhance")
                         history.add("Enhance", img, result, prompt)
                         st.success(f"Done in {elapsed:.1f}s")
@@ -1092,10 +935,12 @@ def render_nano_banana():
                             "scene_type": scene_type,
                             "product_desc": product_desc_sc,
                         })
+                        result = _ratio_to_pil(result, ratio_wh)
                         elapsed = time.time() - t0
                         st.session_state.nb_api_calls += 1
                         st.session_state.nb_gen_time += elapsed
-                        prompt = f"Scene: {scene_type}"
+                        prompt = (f"Scene: {scene_type}"
+                                  + _ratio_prompt_suffix(ratio_label, ratio_wh))
                         _set_result(result, prompt, "scene")
                         history.add("Scene", img, result, prompt)
                         st.success(f"Done in {elapsed:.1f}s")
@@ -1126,10 +971,12 @@ def render_nano_banana():
                             "lighting_type": lighting_type,
                             "product_desc": product_desc_lt,
                         })
+                        result = _ratio_to_pil(result, ratio_wh)
                         elapsed = time.time() - t0
                         st.session_state.nb_api_calls += 1
                         st.session_state.nb_gen_time += elapsed
-                        prompt = f"Lighting: {lighting_type}"
+                        prompt = (f"Lighting: {lighting_type}"
+                                  + _ratio_prompt_suffix(ratio_label, ratio_wh))
                         _set_result(result, prompt, "lighting")
                         history.add("Lighting", img, result, prompt)
                         st.success(f"Done in {elapsed:.1f}s")
@@ -1158,10 +1005,12 @@ def render_nano_banana():
                             "mode": "shadow",
                             "shadow_type": shadow_type,
                         })
+                        result = _ratio_to_pil(result, ratio_wh)
                         elapsed = time.time() - t0
                         st.session_state.nb_api_calls += 1
                         st.session_state.nb_gen_time += elapsed
-                        prompt = f"Shadow: {shadow_type}"
+                        prompt = (f"Shadow: {shadow_type}"
+                                  + _ratio_prompt_suffix(ratio_label, ratio_wh))
                         _set_result(result, prompt, "shadow")
                         history.add("Shadow", img, result, prompt)
                         st.success(f"Done in {elapsed:.1f}s")
@@ -1184,6 +1033,8 @@ def render_nano_banana():
         built = build_from_preset(preset, product_desc_pb)
         if custom_add:
             built += f" {custom_add}"
+        if ratio_wh:
+            built += _ratio_prompt_suffix(ratio_label, ratio_wh)
 
         st.markdown("**Built Prompt:**")
         st.code(built, language=None)
@@ -1251,7 +1102,7 @@ def render_nano_banana():
             else:
                 import tempfile, pathlib, zipfile as _zf
 
-                config = {"mode": batch_mode, "angles": batch_angles}
+                config = {"mode": batch_mode, "angles": batch_angles, "ratio_wh": ratio_wh}
                 if batch_mode == "background":
                     config["background_option"] = batch_bg
 
