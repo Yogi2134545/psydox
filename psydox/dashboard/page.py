@@ -67,6 +67,21 @@ def render_dashboard(
             st.session_state.logged_in = False
             st.rerun()
 
+        # Admin: health check (only shown when DEBUG_MODE or admin role)
+        import os
+        if os.environ.get("DEBUG_MODE", "").lower() in ("1", "true"):
+            st.markdown("---")
+            if st.button("🔍 Health Check", use_container_width=True, key="sb_health"):
+                st.session_state["show_health"] = True
+            if st.session_state.get("show_health"):
+                try:
+                    from psydox.health import check_health
+                    report = check_health()
+                    for comp in report.components:
+                        st.caption(f"{comp.icon()} {comp.name}: {comp.message or comp.status.value}")
+                except Exception as e:
+                    st.caption(f"Health check error: {e}")
+
     # ── Header ─────────────────────────────────────────────────────────────────
     hcol1, hcol2 = st.columns([6, 1])
     with hcol1:
@@ -109,6 +124,19 @@ def render_dashboard(
             cols=4 if prefs.layout() == "comfortable" else 5,
         )
         st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Recent projects ────────────────────────────────────────────────────────
+    if prefs.is_widget_visible("recent_projects"):
+        try:
+            from psydox.projects.service import get_project_service
+            projects = get_project_service().list(user_email)
+            render_recent_projects(
+                [p.to_dict() for p in projects[:6]],
+                on_open=lambda pid: st.session_state.update({"view_project": pid}),
+            )
+            st.markdown("<br>", unsafe_allow_html=True)
+        except Exception:
+            pass
 
     # ── Recent jobs ────────────────────────────────────────────────────────────
     if prefs.is_widget_visible("recent_jobs"):

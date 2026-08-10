@@ -238,17 +238,48 @@ if st.session_state.psydox_nav == "dashboard":
             st.session_state.psydox_nav = "classic"
             st.rerun()
 
+        def _new_project():
+            st.session_state.psydox_nav = "new_project"
+            st.rerun()
+
         render_dashboard(
             user_email=st.session_state.user_email,
             user_name=st.session_state.user_name,
             on_feature_select=_on_feature,
             on_classic=_go_classic,
             on_ai_studio=_go_ai,
+            on_new_project=_new_project,
         )
     except Exception as e:
         st.error(f"Dashboard error: {e}")
         st.session_state.psydox_nav = "classic"
         st.rerun()
+    st.stop()
+
+# ─── New project view ────────────────────────────────────────────────────────
+if st.session_state.psydox_nav == "new_project":
+    with st.sidebar:
+        if st.button("← Dashboard"):
+            st.session_state.psydox_nav = "dashboard"
+            st.rerun()
+    st.markdown("## + New Project")
+    with st.form("new_project_form"):
+        proj_name = st.text_input("Project name", placeholder="e.g. Summer Collection 2025")
+        proj_desc = st.text_area("Description (optional)", height=80)
+        submitted = st.form_submit_button("Create Project →", use_container_width=True)
+    if submitted and proj_name.strip():
+        try:
+            from psydox.projects.service import get_project_service
+            proj = get_project_service().create(
+                name=proj_name.strip(),
+                owner_email=st.session_state.user_email,
+                description=proj_desc.strip(),
+            )
+            st.success(f"Project **{proj.name}** created! ID: `{proj.id}`")
+            st.session_state.psydox_nav = "dashboard"
+            st.rerun()
+        except Exception as e:
+            st.error(f"Could not create project: {e}")
     st.stop()
 
 # ─── Feature (AI Studio via registry) view ───────────────────────────────────
@@ -258,12 +289,55 @@ if st.session_state.psydox_nav.startswith("feature:"):
         if st.button("← Back to Dashboard"):
             st.session_state.psydox_nav = "dashboard"
             st.rerun()
+
+    # Dispatch to classic feature via registry
+    try:
+        from psydox.core.registry import get_registry
+        from psydox.security.upload import validate_upload
+        feature = get_registry().get(fid)
+        if feature and not feature.manifest.requires_ai:
+            st.markdown(f"## {feature.manifest.icon} {feature.manifest.name}")
+            st.caption(feature.manifest.description)
+            uploaded_file = st.file_uploader("Upload image", type=["jpg","jpeg","png","webp"])
+            if uploaded_file:
+                img_bytes = uploaded_file.getvalue()
+                val_result = validate_upload(img_bytes, uploaded_file.name)
+                if not val_result.valid:
+                    for e in val_result.errors:
+                        st.error(e)
+                else:
+                    for w in val_result.warnings:
+                        st.warning(w)
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.image(img_bytes, caption="Original", use_container_width=True)
+                    if st.button(f"Run {feature.manifest.name}", type="primary"):
+                        with st.spinner("Processing..."):
+                            result = feature.execute({"image_bytes": img_bytes, "operation": "packshot"}, {})
+                        if result["success"] and result["outputs"]:
+                            for out in result["outputs"]:
+                                with col2:
+                                    st.image(out["bytes"], caption=out.get("label","Result"),
+                                             use_container_width=True)
+                                st.download_button(
+                                    f"⬇ Download {out.get('label','')}",
+                                    data=out["bytes"],
+                                    file_name=f"{fid}_result.jpg",
+                                    mime=out.get("mime","image/jpeg"),
+                                )
+                        else:
+                            for err in result.get("errors", []):
+                                st.error(err)
+            st.stop()
+    except Exception:
+        pass
+
     if fid in ("background", "lifestyle", "model_gen") and _NB_AVAILABLE:
         st.session_state.nb_mode = True
         st.session_state.psydox_nav = "classic"
         st.rerun()
     else:
-        st.info(f"Feature **{fid}** UI coming soon. Use AI Studio for now.")
+        st.info(f"Feature **{fid}** — open AI Studio for full access.")
         st.stop()
 
 # ═════════════════════════════════════════════════════════════════════════════

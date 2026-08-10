@@ -230,7 +230,7 @@ def _laplacian_variance(img) -> float:
         return float(np.var(lap))
     else:
         gray = img.convert("L").resize((64, 64), Image.LANCZOS)
-        pixels = list(gray.getdata())
+        pixels = list(gray.tobytes())  # L-mode: 1 byte per pixel
         w, h = gray.size
         lap = []
         for y in range(1, h - 1):
