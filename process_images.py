@@ -586,59 +586,46 @@ def remove_grid_lines(img: Image.Image) -> Image.Image:
 # ══════════════════════════════════════════════════════════════════════════════
 def convert_to_4_5(img: Image.Image, cfg: dict) -> Image.Image:
     TW, TH = cfg["TARGET_W"], cfg["TARGET_H"]
-    auto_mode = cfg.get("BG_RGB") == "auto"
 
     # Convert to RGB early, drop alpha channel (saves memory)
     img = img.convert("RGB")
 
-    # Only replace mixed backgrounds when a specific bg colour is chosen
-    if not auto_mode:
-        img = replace_mixed_background(img, cfg)
+    # Detect the original background colour BEFORE any replacement —
+    # used to fill the letterbox/pillarbox strips so they match the source.
+    _ia = np.array(img, dtype=np.uint8)
+    _ih, _iw = _ia.shape[:2]
+    _d = min(_BG_SAMPLE_DEPTH, _ih // 4, _iw // 4)
+    _edge = np.concatenate([
+        _ia[:_d, :].reshape(-1, 3), _ia[_ih-_d:, :].reshape(-1, 3),
+        _ia[:, :_d].reshape(-1, 3), _ia[:, _iw-_d:].reshape(-1, 3),
+    ])
+    original_bg = tuple(int(c) for c in np.median(_edge, axis=0).astype(np.uint8))
 
-    orig_w, orig_h = img.size
-
-    MARGIN = 0.04  # breathing room on every edge
-
-    # Fit the full image inside canvas — never crop any edge
-    scale = min(
-        TW * (1 - 2 * MARGIN) / orig_w,
-        TH * (1 - 2 * MARGIN) / orig_h,
-        2.0
-    )
-
-    nw = max(1, int(orig_w * scale))
-    nh = max(1, int(orig_h * scale))
-    # Single high-quality resize.  The previous code did a BOX pre-downscale
-    # followed by a BICUBIC resize, accumulating two interpolation passes.
-    scaled = img.resize((nw, nh), Image.LANCZOS)
-
-    # Centre on canvas
-    px = (TW - nw) // 2
-    py = (TH - nh) // 2
-
-    # Determine canvas fill colour from config — same colour as the background
-    # replacement step so the padding margin is uniform throughout.
+    # Only replace the background when the user explicitly chose a specific colour.
+    # "auto" and the legacy BG_GREY path both preserve the original background.
     _bgr = cfg.get("BG_RGB")
     if isinstance(_bgr, (list, tuple)) and len(_bgr) == 3:
         bg_fill = tuple(int(c) for c in _bgr)
-    elif _bgr == "auto":
-        # Auto mode: sample the dominant edge colour from the (already cleaned) image
-        _ea = np.array(scaled, dtype=np.uint8)
-        _eh, _ew = _ea.shape[:2]
-        _d = min(_BG_SAMPLE_DEPTH, _eh // 4, _ew // 4)
-        _edge = np.concatenate([
-            _ea[:_d, :].reshape(-1, 3), _ea[_eh-_d:, :].reshape(-1, 3),
-            _ea[:, :_d].reshape(-1, 3), _ea[:, _ew-_d:].reshape(-1, 3),
-        ])
-        bg_fill = tuple(int(c) for c in np.median(_edge, axis=0).astype(np.uint8))
+        img = replace_mixed_background(img, cfg)
     else:
-        bg_val = cfg.get("BG_GREY", DEFAULT_BG_GREY)
-        bg_fill = (bg_val, bg_val, bg_val)
+        # No specific colour selected — keep the original background untouched.
+        bg_fill = original_bg
 
-    # Build canvas filled with the uniform background colour.
-    # Using a solid fill instead of repeating source edge pixels ensures the
-    # padding margin is one consistent colour even when the source had a
-    # dual-coloured background that wasn't fully corrected by replace_mixed_background.
+    orig_w, orig_h = img.size
+
+    # Fit the full image into the target canvas — no padding margin.
+    # The product fills as much of the frame as possible; the only empty strips
+    # are the unavoidable letterbox/pillarbox caused by aspect-ratio difference.
+    scale = min(TW / orig_w, TH / orig_h, 2.0)
+
+    nw = max(1, int(orig_w * scale))
+    nh = max(1, int(orig_h * scale))
+    scaled = img.resize((nw, nh), Image.LANCZOS)
+
+    # Centre on canvas filled with the background colour.
+    px = (TW - nw) // 2
+    py = (TH - nh) // 2
+
     canvas_arr = np.full((TH, TW, 3), bg_fill, dtype=np.uint8)
     canvas_arr[py:py+nh, px:px+nw] = np.array(scaled, dtype=np.uint8)
 
