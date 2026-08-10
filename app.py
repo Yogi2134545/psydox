@@ -10,6 +10,13 @@ try:
 except ImportError:
     _NB_AVAILABLE = False
 
+# Bootstrap the Psydox feature registry (runs once per process)
+try:
+    from psydox.features.loader import bootstrap_features
+    bootstrap_features()
+except Exception:
+    pass
+
 st.set_page_config(page_title="Psydox", page_icon="⚡", layout="wide",
                    initial_sidebar_state="expanded")
 
@@ -180,15 +187,71 @@ def _worker(job_id, cfg, out_dir):
         _flush_job(job_id)
 
 # ═════════════════════════════════════════════════════════════════════════════
+#  NAV MODE
+# ═════════════════════════════════════════════════════════════════════════════
+if "psydox_nav" not in st.session_state:
+    st.session_state.psydox_nav = "classic"
+
+# ─── Dashboard view ──────────────────────────────────────────────────────────
+if st.session_state.psydox_nav == "dashboard":
+    try:
+        from psydox.dashboard.page import render_dashboard
+        from psydox.core.registry import get_registry
+
+        with st.sidebar:
+            st.markdown("---")
+            if st.button("⚡ Classic Processing", use_container_width=True):
+                st.session_state.psydox_nav = "classic"
+                st.rerun()
+            st.markdown(f"<div style='color:#888;font-size:0.8rem;padding-top:8px'>"
+                        f"👤 {st.session_state.user_name}</div>", unsafe_allow_html=True)
+            if st.button("Sign Out", key="so_dash"):
+                st.session_state.logged_in = False
+                st.rerun()
+
+        def _on_feature(fid):
+            st.session_state.psydox_nav = f"feature:{fid}"
+            st.rerun()
+
+        render_dashboard(
+            user_email=st.session_state.user_email,
+            on_feature_select=_on_feature,
+        )
+    except Exception as e:
+        st.error(f"Dashboard error: {e}")
+        st.session_state.psydox_nav = "classic"
+        st.rerun()
+    st.stop()
+
+# ─── Feature (AI Studio via registry) view ───────────────────────────────────
+if st.session_state.psydox_nav.startswith("feature:"):
+    fid = st.session_state.psydox_nav.split(":", 1)[1]
+    with st.sidebar:
+        if st.button("← Back to Dashboard"):
+            st.session_state.psydox_nav = "dashboard"
+            st.rerun()
+    if fid in ("background", "lifestyle", "model_gen") and _NB_AVAILABLE:
+        st.session_state.nb_mode = True
+        st.session_state.psydox_nav = "classic"
+        st.rerun()
+    else:
+        st.info(f"Feature **{fid}** UI coming soon. Use AI Studio for now.")
+        st.stop()
+
+# ═════════════════════════════════════════════════════════════════════════════
 #  HEADER + SIDEBAR
 # ═════════════════════════════════════════════════════════════════════════════
-c1, c2 = st.columns([7, 1])
+c1, c2, c3 = st.columns([6, 1, 1])
 with c1:
     st.markdown("""<div style='background:#ff6600;padding:10px 20px;border-radius:8px;
     margin-bottom:16px;'><span style='color:white;font-size:22px;font-weight:bold'>
     ⚡ Psydox</span> <span style='color:#ffe0c0;font-size:13px'>Image Processing Engine
     </span></div>""", unsafe_allow_html=True)
 with c2:
+    if st.button("🏠 Dashboard", use_container_width=True):
+        st.session_state.psydox_nav = "dashboard"
+        st.rerun()
+with c3:
     st.markdown(f"<div style='text-align:right;padding-top:6px;color:#888'>"
                 f"👤 {st.session_state.user_name}</div>", unsafe_allow_html=True)
     if st.button("Sign Out"):
