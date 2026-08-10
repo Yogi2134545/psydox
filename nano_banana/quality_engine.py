@@ -18,8 +18,13 @@ import logging
 from dataclasses import dataclass, field
 from enum import Enum
 
-import numpy as np
-from PIL import Image, ImageFilter
+try:
+    import numpy as np
+    _HAS_NUMPY = True
+except ImportError:
+    np = None  # type: ignore
+    _HAS_NUMPY = False
+from PIL import Image, ImageFilter, ImageStat
 
 _log = logging.getLogger("nano_banana.quality_engine")
 
@@ -133,8 +138,7 @@ class AIQualityEngine:
             )
 
         # ── 2. Sharpness (Laplacian variance) ─────────────────────────────────
-        gray = np.array(img.convert("L"), dtype=np.float32)
-        lap_var = _laplacian_variance(gray)
+        lap_var = _laplacian_variance(img)
         sharpness_score = min(100.0, (lap_var / 500.0) * 100.0)
         details["laplacian_variance"] = round(lap_var, 2)
         if lap_var < self.MIN_SHARPNESS:
@@ -144,7 +148,7 @@ class AIQualityEngine:
             )
 
         # ── 3. Brightness ─────────────────────────────────────────────────────
-        mean_brightness = float(np.mean(gray))
+        mean_brightness = _mean_brightness(img)
         details["mean_brightness"] = round(mean_brightness, 1)
         brightness_ok = 20.0 < mean_brightness < 235.0
         if not brightness_ok:
@@ -195,24 +199,54 @@ class AIQualityEngine:
 
 def _histogram_similarity(img1: Image.Image, img2: Image.Image) -> float:
     """Bhattacharyya coefficient between per-channel histograms → 0–100."""
-    a = np.array(img1, dtype=np.float32)
-    b = np.array(img2, dtype=np.float32)
-    score = 0.0
-    for ch in range(3):
-        h1, _ = np.histogram(a[:, :, ch], bins=64, range=(0, 256))
-        h2, _ = np.histogram(b[:, :, ch], bins=64, range=(0, 256))
-        h1 = h1 / (h1.sum() + 1e-10)
-        h2 = h2 / (h2.sum() + 1e-10)
-        score += float(np.sum(np.sqrt(h1 * h2)))
-    return (score / 3.0) * 100.0
+    if _HAS_NUMPY:
+        a = np.array(img1, dtype=np.float32)
+        b = np.array(img2, dtype=np.float32)
+        score = 0.0
+        for ch in range(3):
+            h1, _ = np.histogram(a[:, :, ch], bins=64, range=(0, 256))
+            h2, _ = np.histogram(b[:, :, ch], bins=64, range=(0, 256))
+            h1 = h1 / (h1.sum() + 1e-10)
+            h2 = h2 / (h2.sum() + 1e-10)
+            score += float(np.sum(np.sqrt(h1 * h2)))
+        return (score / 3.0) * 100.0
+    else:
+        # PIL histogram returns counts for all bands concatenated (len = 256 * bands)
+        ha = img1.histogram()
+        hb = img2.histogram()
+        ta, tb = sum(ha) or 1, sum(hb) or 1
+        # Bhattacharyya: sum(sqrt(p_i * q_i)) where p,q are normalized distributions
+        bc = sum((ha[i]/ta * hb[i]/tb)**0.5 for i in range(len(ha)))
+        return min(bc, 1.0) * 100.0
 
 
-def _laplacian_variance(gray: np.ndarray) -> float:
-    """
-    Approximate Laplacian variance using finite differences.
-    Higher value = sharper image. No scipy dependency.
-    """
-    dx2 = gray[:, 2:] - 2.0 * gray[:, 1:-1] + gray[:, :-2]
-    dy2 = gray[2:, :] - 2.0 * gray[1:-1, :] + gray[:-2, :]
-    lap = dx2[1:-1, :] + dy2[:, 1:-1]
-    return float(np.var(lap))
+def _laplacian_variance(img) -> float:
+    """Laplacian variance for sharpness. Higher = sharper."""
+    if _HAS_NUMPY:
+        gray = np.array(img.convert("L"), dtype=np.float32)
+        dx2 = gray[:, 2:] - 2.0 * gray[:, 1:-1] + gray[:, :-2]
+        dy2 = gray[2:, :] - 2.0 * gray[1:-1, :] + gray[:-2, :]
+        lap = dx2[1:-1, :] + dy2[:, 1:-1]
+        return float(np.var(lap))
+    else:
+        gray = img.convert("L").resize((64, 64), Image.LANCZOS)
+        pixels = list(gray.getdata())
+        w, h = gray.size
+        lap = []
+        for y in range(1, h - 1):
+            for x in range(1, w - 1):
+                c = pixels[y * w + x]
+                nb = pixels[(y-1)*w+x] + pixels[(y+1)*w+x] + pixels[y*w+x-1] + pixels[y*w+x+1]
+                lap.append(4 * c - nb)
+        if not lap:
+            return 0.0
+        n = len(lap)
+        mean_l = sum(lap) / n
+        return sum((v - mean_l) ** 2 for v in lap) / n
+
+
+def _mean_brightness(img) -> float:
+    if _HAS_NUMPY:
+        return float(np.mean(np.array(img.convert("L"), dtype=np.float32)))
+    else:
+        return ImageStat.Stat(img.convert("L")).mean[0]

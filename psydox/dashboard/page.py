@@ -1,72 +1,150 @@
-"""Psydox main dashboard renderer."""
+"""Psydox Gen-Z Dashboard — main page renderer."""
+from __future__ import annotations
+
 import streamlit as st
 
-from psydox.core.registry import get_registry
-from psydox.jobs.manager import get_job_manager
 from psydox.dashboard.theme import get_theme_manager
-from psydox.dashboard.widgets import render_stats_row, render_recent_jobs, render_feature_grid
+from psydox.dashboard.preferences import get_preferences
+from psydox.dashboard.widgets import (
+    render_hero, render_stats_row, render_quick_create,
+    render_recent_jobs, render_recent_projects, render_ai_usage,
+    WIDGET_REGISTRY,
+)
+from psydox.jobs.manager import get_job_manager
 
 
-def render_dashboard(user_email: str = "", on_feature_select=None) -> None:
-    """Render the full Gen-Z Psydox dashboard."""
-    tm = get_theme_manager()
-    tm.inject_css()
+def render_dashboard(
+    user_email:       str = "",
+    user_name:        str = "",
+    on_feature_select = None,
+    on_classic:       callable | None = None,
+    on_ai_studio:     callable | None = None,
+    on_new_project:   callable | None = None,
+) -> None:
+    """Full Gen-Z dashboard."""
+    prefs = get_preferences(user_email)
+    tm    = get_theme_manager()
+    tm.inject_css(accent_override=prefs.get("accent", ""))
 
-    # ── Sidebar: theme picker ──────────────────────────────────────────────────
+    # ── Sidebar ────────────────────────────────────────────────────────────────
     with st.sidebar:
-        st.markdown("### 🎨 Theme")
-        themes = tm.all_themes()
-        names  = [t.name for t in themes]
-        keys   = [t.name.lower().replace(" ", "_") for t in themes]
-        cur_key = st.session_state.get("psydox_theme", "midnight")
-        try:
-            cur_idx = keys.index(cur_key)
-        except ValueError:
-            cur_idx = 0
-        picked = st.radio("", names, index=cur_idx, key="theme_picker", label_visibility="collapsed")
+        st.markdown("---")
+        st.markdown("**🎨 Theme**")
+        themes   = tm.all_themes()
+        cur_key  = prefs.theme()
+        cur_idx  = next((i for i, t in enumerate(themes) if t.key == cur_key), 0)
+        picked   = st.radio(
+            "", [t.name for t in themes],
+            index=cur_idx, key="sb_theme", label_visibility="collapsed",
+        )
         if picked:
-            tm.set(picked.lower().replace(" ", "_"))
+            new_key = picked.lower().replace(" ", "_")
+            if new_key != cur_key:
+                prefs.set("theme", new_key)
+                prefs.save()
+                tm.set(new_key)
+                st.rerun()
+
+        st.markdown("**📐 Layout**")
+        layout = st.radio(
+            "", ["Comfortable", "Compact"],
+            index=0 if prefs.layout() == "comfortable" else 1,
+            key="sb_layout", label_visibility="collapsed",
+        )
+        if layout:
+            prefs.set("layout", layout.lower())
+
+        st.markdown("---")
+        st.markdown(
+            f'<div style="color:var(--text-secondary);font-size:0.85rem;padding-bottom:8px;">'
+            f'👤 {user_name or user_email}</div>',
+            unsafe_allow_html=True,
+        )
+        if st.button("⚡ Classic Processing", use_container_width=True, key="sb_classic"):
+            if on_classic:
+                on_classic()
+        if st.button("Sign Out", key="sb_signout", use_container_width=True):
+            st.session_state.logged_in = False
+            st.rerun()
 
     # ── Header ─────────────────────────────────────────────────────────────────
-    st.markdown(
-        '<h1 style="font-size:2.2rem;font-weight:800;background:var(--gradient);'
-        '-webkit-background-clip:text;-webkit-text-fill-color:transparent;'
-        'background-clip:text;margin-bottom:4px;">⚡ Psydox Studio</h1>',
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        '<p style="color:var(--text-secondary);margin-top:0;font-size:0.95rem;">'
-        'AI-powered product image platform</p>',
-        unsafe_allow_html=True,
-    )
+    hcol1, hcol2 = st.columns([6, 1])
+    with hcol1:
+        st.markdown(
+            '<span class="psx-gradient-text" style="font-size:2.4rem;">⚡ Psydox Studio</span>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            '<p style="color:var(--text-secondary);font-size:0.9rem;margin-top:-8px;">'
+            'CREATE. VERIFY. DELIVER.</p>',
+            unsafe_allow_html=True,
+        )
+    with hcol2:
+        if on_new_project and st.button("+ New Project", use_container_width=True, key="hdr_new"):
+            on_new_project()
+
     st.divider()
+
+    # ── Hero ───────────────────────────────────────────────────────────────────
+    render_hero(
+        user_name=user_name,
+        on_classic=on_classic,
+        on_ai_studio=on_ai_studio,
+    )
+
+    st.markdown("<br>", unsafe_allow_html=True)
 
     # ── Stats row ──────────────────────────────────────────────────────────────
     jm    = get_job_manager()
     stats = jm.stats(user_email=user_email)
-    render_stats_row(stats)
-    st.markdown("<br>", unsafe_allow_html=True)
+    if prefs.is_widget_visible("metrics"):
+        render_stats_row(stats)
+        st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── Features grid ─────────────────────────────────────────────────────────
-    st.markdown("### Features")
-    registry = get_registry()
-    features = registry.all()
-    render_feature_grid(features, on_select=on_feature_select)
-
-    st.markdown("<br>", unsafe_allow_html=True)
+    # ── Quick Create ───────────────────────────────────────────────────────────
+    if prefs.is_widget_visible("quick_create"):
+        render_quick_create(
+            on_select=on_feature_select,
+            pinned_ids=prefs.pinned_features(),
+            cols=4 if prefs.layout() == "comfortable" else 5,
+        )
+        st.markdown("<br>", unsafe_allow_html=True)
 
     # ── Recent jobs ────────────────────────────────────────────────────────────
-    st.markdown("### Recent Activity")
-    recent = jm.recent(user_email=user_email, n=10)
+    if prefs.is_widget_visible("recent_jobs"):
+        recent = jm.recent(user_email=user_email, n=10)
 
-    def _handle_download(job, out):
-        fname = f"{job.feature_id}_{job.id}.jpg"
-        st.download_button(
-            label=f"⬇ Download {out.get('label','')}",
-            data=out["bytes"],
-            file_name=fname,
-            mime=out.get("mime", "image/jpeg"),
-            key=f"dl_btn_{job.id}_{fname}",
-        )
+        def _handle_download(job, out):
+            fname = f"{job.feature_id}_{job.id}.jpg"
+            st.download_button(
+                label=f"⬇ Download {out.get('label', '')}",
+                data=out["bytes"],
+                file_name=fname,
+                mime=out.get("mime", "image/jpeg"),
+                key=f"dl_btn_{job.id}_{fname}",
+            )
 
-    render_recent_jobs(recent, on_download=_handle_download)
+        render_recent_jobs(recent, on_download=_handle_download)
+
+    # ── Widget customization toggle ────────────────────────────────────────────
+    with st.expander("⚙️ Customize dashboard", expanded=False):
+        st.caption("Show / hide widgets:")
+        for widget_id, _, label, default in WIDGET_REGISTRY:
+            if widget_id == "hero":
+                continue
+            visible = prefs.is_widget_visible(widget_id)
+            new_val = st.checkbox(label, value=visible, key=f"wvis_{widget_id}")
+            if new_val != visible:
+                prefs.toggle_widget(widget_id)
+                prefs.save()
+                st.rerun()
+
+        # Accent color override
+        st.markdown("**Accent colour**")
+        current_accent = prefs.get("accent", "")
+        new_accent = st.text_input("HEX (leave blank to use theme default)",
+                                    value=current_accent, key="accent_input")
+        if new_accent != current_accent:
+            prefs.set("accent", new_accent.strip())
+            prefs.save()
+            st.rerun()

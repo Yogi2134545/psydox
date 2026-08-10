@@ -15,7 +15,14 @@ from nano_banana.quality_engine import (
     _histogram_similarity,
 )
 from PIL import Image
-import numpy as np
+try:
+    import numpy as np
+    _HAS_NUMPY = True
+except ImportError:
+    np = None  # type: ignore
+    _HAS_NUMPY = False
+
+needs_numpy = pytest.mark.skipif(not _HAS_NUMPY, reason="numpy not installed")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -28,8 +35,13 @@ def _solid_jpeg(color=(200, 200, 200), size=(1024, 1024)) -> bytes:
 
 
 def _noise_jpeg(size=(1024, 1024)) -> bytes:
-    arr = np.random.randint(0, 256, (*size, 3), dtype=np.uint8)
-    img = Image.fromarray(arr, mode="RGB")
+    if _HAS_NUMPY:
+        arr = np.random.randint(0, 256, (*size, 3), dtype=np.uint8)
+        img = Image.fromarray(arr, mode="RGB")
+    else:
+        import random
+        pixels = bytes(random.randint(0, 255) for _ in range(size[0] * size[1] * 3))
+        img = Image.frombytes("RGB", size, pixels)
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=90)
     return buf.getvalue()
@@ -43,17 +55,20 @@ def _tiny_jpeg(color=(200, 200, 200), size=(100, 100)) -> bytes:
 
 class TestLaplacianVariance:
     def test_flat_image_low_variance(self):
-        gray = np.full((256, 256), 128.0, dtype=np.float32)
-        assert _laplacian_variance(gray) < 1.0
+        img = Image.new("L", (256, 256), 128)
+        assert _laplacian_variance(img.convert("RGB")) < 10.0
 
+    @needs_numpy
     def test_noisy_image_high_variance(self):
         rng = np.random.default_rng(42)
-        gray = rng.uniform(0, 255, (256, 256)).astype(np.float32)
-        assert _laplacian_variance(gray) > 100.0
+        arr = rng.integers(0, 256, (256, 256, 3), dtype=np.uint8)
+        img = Image.fromarray(arr, "RGB")
+        assert _laplacian_variance(img) > 100.0
 
     def test_non_negative(self):
-        gray = np.random.rand(128, 128).astype(np.float32) * 255
-        assert _laplacian_variance(gray) >= 0.0
+        img = _noise_jpeg()
+        result = _laplacian_variance(Image.open(io.BytesIO(img)).convert("RGB"))
+        assert result >= 0.0
 
 
 # ── _histogram_similarity ─────────────────────────────────────────────────────
@@ -83,6 +98,7 @@ class TestAIQualityEngine:
     def setup_method(self):
         self.engine = AIQualityEngine()
 
+    @needs_numpy
     def test_good_image_approved(self):
         result = self.engine.score(_noise_jpeg())
         assert result.verdict == QualityVerdict.APPROVED

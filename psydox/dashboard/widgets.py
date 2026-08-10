@@ -1,25 +1,119 @@
-"""Psydox dashboard widgets — composable UI blocks."""
+"""
+Psydox Dashboard Widgets
+
+Independent, registerable UI components.  Each widget is a function.
+Widgets are self-contained — adding a new widget doesn't require editing any
+other widget or the dashboard page.
+
+Available widgets:
+  render_hero              — greeting + primary CTAs
+  render_stats_row         — 4 key metrics
+  render_quick_create      — feature grid (auto-populated from registry)
+  render_recent_jobs       — job history with download
+  render_recent_projects   — project cards
+  render_ai_usage_widget   — cost / generation stats
+
+Widget registry:
+  WIDGET_REGISTRY maps widget_id → (render_fn, label, default_visible)
+  New widgets register by adding an entry — dashboard page discovers them.
+"""
+from __future__ import annotations
+
+import datetime
 import streamlit as st
 
 from psydox.jobs.manager import Job, JobStatus
 
 
-def render_metric_widget(label: str, value, delta=None, help: str = "") -> None:
-    st.metric(label=label, value=str(value), delta=delta, help=help)
+# ── Hero ──────────────────────────────────────────────────────────────────────
+
+def render_hero(user_name: str = "", on_classic=None, on_ai_studio=None) -> None:
+    hour = datetime.datetime.now().hour
+    if hour < 12:
+        greeting = "Good morning"
+    elif hour < 17:
+        greeting = "Good afternoon"
+    else:
+        greeting = "Good evening"
+
+    name_part = f", {user_name.split()[0]}" if user_name else ""
+
+    st.markdown(
+        f'<h2 style="font-size:2rem;font-weight:800;color:var(--text-primary);margin-bottom:4px;">'
+        f'{greeting}{name_part} 👋</h2>'
+        f'<p style="color:var(--text-secondary);font-size:1rem;margin-bottom:24px;">'
+        f'What are we creating today?</p>',
+        unsafe_allow_html=True,
+    )
+
+    c1, c2, c3 = st.columns([1, 1, 4])
+    with c1:
+        if st.button("⚡ CLASSIC", use_container_width=True, help="Fast catalog processing"):
+            if on_classic:
+                on_classic()
+    with c2:
+        if st.button("✨ AI STUDIO", use_container_width=True, help="Create premium AI product content"):
+            if on_ai_studio:
+                on_ai_studio()
 
 
-def render_stats_row(stats: dict) -> None:
-    c1, c2, c3, c4 = st.columns(4)
-    with c1: render_metric_widget("Total Jobs",   stats.get("total", 0))
-    with c2: render_metric_widget("Completed",    stats.get("completed", 0))
-    with c3: render_metric_widget("Active",       stats.get("active", 0))
-    with c4: render_metric_widget("Failed",       stats.get("failed", 0))
+# ── Stats ─────────────────────────────────────────────────────────────────────
 
+def render_stats_row(stats: dict, ai_stats: dict | None = None) -> None:
+    cols = st.columns(4)
+    with cols[0]: st.metric("Total Jobs",   stats.get("total",     0))
+    with cols[1]: st.metric("✅ Completed", stats.get("completed", 0))
+    with cols[2]: st.metric("⚙️ Active",    stats.get("active",    0))
+    with cols[3]: st.metric("❌ Failed",    stats.get("failed",    0))
+
+
+# ── Quick Create ──────────────────────────────────────────────────────────────
+
+def render_quick_create(on_select=None, pinned_ids: list | None = None,
+                         cols: int = 4) -> None:
+    """Auto-populated from feature registry.  Pinned features appear first."""
+    from psydox.core.registry import get_registry
+    registry  = get_registry()
+    all_feats = registry.all()
+
+    if pinned_ids:
+        pinned  = [f for f in all_feats if f.manifest.id in pinned_ids]
+        rest    = [f for f in all_feats if f.manifest.id not in pinned_ids]
+        features = pinned + rest
+    else:
+        features = all_feats
+
+    if not features:
+        st.info("No features registered yet.")
+        return
+
+    st.markdown("### ⚡ Quick Create")
+    for row_start in range(0, len(features), cols):
+        row_feats = features[row_start:row_start + cols]
+        columns   = st.columns(cols)
+        for col, feat in zip(columns, row_feats):
+            m = feat.manifest
+            with col:
+                ai_badge = '<span class="psx-badge psx-ai">AI</span>' if m.requires_ai else ""
+                st.markdown(f"""
+<div class="psx-feat">
+  <div class="psx-feat-icon">{m.icon}</div>
+  <div class="psx-feat-name">{m.name} {ai_badge}</div>
+  <div class="psx-feat-desc">{m.description[:55]}{"…" if len(m.description) > 55 else ""}</div>
+</div>""", unsafe_allow_html=True)
+                if st.button(f"Open", key=f"qc_{m.id}", use_container_width=True):
+                    if on_select:
+                        on_select(m.id)
+
+
+# ── Recent jobs ───────────────────────────────────────────────────────────────
 
 def render_recent_jobs(jobs: list[Job], on_download=None) -> None:
+    st.markdown("### 🕐 Recent Activity")
     if not jobs:
         st.markdown(
-            '<div style="text-align:center;padding:32px;opacity:.5;">No jobs yet — run a feature to get started</div>',
+            '<div style="text-align:center;padding:32px;opacity:.5;">'
+            'No activity yet — run a feature to see results here</div>',
             unsafe_allow_html=True,
         )
         return
@@ -27,43 +121,100 @@ def render_recent_jobs(jobs: list[Job], on_download=None) -> None:
     for job in jobs:
         icon = job.status_icon()
         dur  = job.duration_s()
-        dur_txt = f"· {dur}s" if dur else ""
+        dur_txt = f"  ·  {dur}s" if dur else ""
 
-        with st.expander(f"{icon} **{job.label}** `{job.id}` {dur_txt}", expanded=False):
-            col1, col2 = st.columns([2, 1])
-            with col1:
-                st.caption(f"Feature: `{job.feature_id}` · Status: `{job.status.value}`")
-                if job.errors:
-                    for e in job.errors:
-                        st.error(e, icon="⚠️")
-            with col2:
-                if job.outputs and on_download:
+        label_color = {
+            JobStatus.COMPLETED: "var(--success)",
+            JobStatus.FAILED:    "var(--danger)",
+            JobStatus.PROCESSING: "var(--accent-primary)",
+        }.get(job.status, "var(--text-secondary)")
+
+        with st.expander(f"{icon} **{job.label}** `{job.id}`{dur_txt}", expanded=False):
+            c1, c2 = st.columns([3, 1])
+            with c1:
+                st.markdown(
+                    f'Feature: <code>{job.feature_id}</code> · '
+                    f'<span style="color:{label_color}">{job.status.value.upper()}</span>',
+                    unsafe_allow_html=True,
+                )
+                for e in job.errors:
+                    st.error(e, icon="⚠️")
+                if job.metadata.get("quality_score") is not None:
+                    qs = job.metadata["quality_score"]
+                    qv = job.metadata.get("quality_verdict", "")
+                    st.caption(f"Quality: {qs}/100 — {qv}")
+            with c2:
+                if job.outputs:
                     for i, out in enumerate(job.outputs):
                         lbl = out.get("label", f"Output {i+1}")
-                        btn_key = f"dl_{job.id}_{i}"
-                        if st.button(f"⬇ {lbl}", key=btn_key):
-                            on_download(job, out)
+                        if st.button(f"⬇ {lbl}", key=f"dl_{job.id}_{i}"):
+                            if on_download:
+                                on_download(job, out)
 
 
-def render_feature_grid(features: list, on_select=None, cols: int = 3) -> None:
-    """Render enabled features as a clickable grid."""
-    if not features:
-        st.info("No features available.")
+# ── Recent projects (placeholder — requires project system) ───────────────────
+
+def render_recent_projects(projects: list[dict], on_open=None) -> None:
+    st.markdown("### 📁 Projects")
+    if not projects:
+        st.markdown(
+            '<div style="text-align:center;padding:32px;opacity:.5;">'
+            'No projects yet — create one to get started</div>',
+            unsafe_allow_html=True,
+        )
         return
+    cols = st.columns(min(len(projects), 3))
+    for col, proj in zip(cols, projects):
+        with col:
+            st.markdown(f"""
+<div class="psx-card">
+  <div style="font-weight:700;font-size:1rem;color:var(--text-primary);">{proj.get("name","Project")}</div>
+  <div style="color:var(--text-secondary);font-size:0.8rem;margin-top:4px;">
+    {proj.get("product_count",0)} products · {proj.get("status","active")}
+  </div>
+</div>""", unsafe_allow_html=True)
+            if st.button("Open", key=f"proj_{proj.get('id','x')}", use_container_width=True):
+                if on_open:
+                    on_open(proj.get("id"))
 
-    for row_start in range(0, len(features), cols):
-        row_features = features[row_start:row_start + cols]
-        columns = st.columns(cols)
-        for col, feat in zip(columns, row_features):
-            m = feat.manifest
-            with col:
-                ai_badge = '<span class="psydox-badge psydox-badge-ai">AI</span>' if m.requires_ai else ""
-                html = f"""
-<div class="psydox-feature-btn" onclick="">
-  <div class="psydox-feature-icon">{m.icon}</div>
-  <div class="psydox-feature-name">{m.name} {ai_badge}</div>
-  <div class="psydox-feature-desc">{m.description[:60]}{"…" if len(m.description)>60 else ""}</div>
-</div>"""
-                st.markdown(html, unsafe_allow_html=True)
-                if on_select and st.button(f"Open {m.name}", key=f"feat_{m.id}", use_container_width=True):
-                    on_select(m.id)
+
+# ── AI usage widget ───────────────────────────────────────────────────────────
+
+def render_ai_usage(user_email: str = "") -> None:
+    """Show AI usage statistics from the database."""
+    st.markdown("### 💰 AI Usage")
+    try:
+        from psydox.storage.database import get_db
+        db = get_db()
+        if user_email:
+            rows = db.execute(
+                "SELECT SUM(cost_usd), COUNT(*) FROM ai_usage WHERE 1=1", ()
+            ).fetchone()
+        else:
+            rows = db.execute("SELECT SUM(cost_usd), COUNT(*) FROM ai_usage").fetchone()
+
+        total_cost  = rows[0] or 0.0
+        total_gens  = rows[1] or 0
+        c1, c2 = st.columns(2)
+        c1.metric("AI Generations", total_gens)
+        c2.metric("Estimated Cost", f"${total_cost:.2f}")
+    except Exception:
+        st.caption("AI usage tracking unavailable")
+
+
+# ── Widget registry ───────────────────────────────────────────────────────────
+# (widget_id, render_fn, label, default_visible)
+# New widgets: add an entry here — dashboard discovers them automatically.
+
+WIDGET_REGISTRY: list[tuple[str, callable, str, bool]] = [
+    ("hero",             render_hero,             "Welcome",       True),
+    ("metrics",          render_stats_row,         "Metrics",       True),
+    ("quick_create",     render_quick_create,      "Quick Create",  True),
+    ("recent_jobs",      render_recent_jobs,        "Recent Jobs",   True),
+    ("recent_projects",  render_recent_projects,    "Projects",      True),
+    ("ai_usage",         render_ai_usage,           "AI Usage",      False),
+]
+
+
+def metric_widget(label: str, value, delta=None, help: str = "") -> None:
+    st.metric(label=label, value=str(value), delta=delta, help=help)

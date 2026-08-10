@@ -10,7 +10,13 @@ try:
 except ImportError:
     _NB_AVAILABLE = False
 
-# Bootstrap the Psydox feature registry (runs once per process)
+# Bootstrap: DB schema + feature auto-discovery (runs once per process)
+try:
+    from psydox.storage.database import init_db
+    init_db()
+except Exception:
+    pass
+
 try:
     from psydox.features.loader import bootstrap_features
     bootstrap_features()
@@ -136,8 +142,18 @@ if not st.session_state.logged_in:
                 st.session_state.logged_in = True
                 st.session_state.user_name = name
                 st.session_state.user_email = email.lower().strip()
+                try:
+                    from psydox.security.audit import get_audit_log
+                    get_audit_log().log(email.lower().strip(), "login")
+                except Exception:
+                    pass
                 st.rerun()
             else:
+                try:
+                    from psydox.security.audit import get_audit_log
+                    get_audit_log().log(email.lower().strip(), "login_failed")
+                except Exception:
+                    pass
                 st.error("Incorrect email or password.")
     st.stop()
 
@@ -213,9 +229,21 @@ if st.session_state.psydox_nav == "dashboard":
             st.session_state.psydox_nav = f"feature:{fid}"
             st.rerun()
 
+        def _go_classic():
+            st.session_state.psydox_nav = "classic"
+            st.rerun()
+
+        def _go_ai():
+            st.session_state.nb_mode = True
+            st.session_state.psydox_nav = "classic"
+            st.rerun()
+
         render_dashboard(
             user_email=st.session_state.user_email,
+            user_name=st.session_state.user_name,
             on_feature_select=_on_feature,
+            on_classic=_go_classic,
+            on_ai_studio=_go_ai,
         )
     except Exception as e:
         st.error(f"Dashboard error: {e}")
