@@ -122,14 +122,22 @@ def sanitize_folder_name(name: str) -> str:
     name = name.strip("._")
     return name or "UNNAMED"
 
+_unique_filename_lock = threading.Lock()
+
 def unique_filename(folder: Path, filename: str) -> Path:
+    """Return a unique path and atomically claim it with an empty placeholder.
+    The lock prevents two threads from racing to the same filename."""
     stem   = Path(filename).stem
     suffix = Path(filename).suffix or ".jpg"
-    dest   = folder / f"{stem}{suffix}"
-    n = 1
-    while dest.exists():
-        dest = folder / f"{stem}_{n}{suffix}"
-        n += 1
+    with _unique_filename_lock:
+        dest = folder / f"{stem}{suffix}"
+        n = 1
+        while dest.exists():
+            dest = folder / f"{stem}_{n}{suffix}"
+            n += 1
+        # Claim the slot: create an empty placeholder so no other thread picks
+        # the same path before this caller has a chance to write the real file.
+        dest.touch()
     return dest
 
 def guess_extension(url: str, ct: str = "") -> str:
@@ -626,7 +634,7 @@ def convert_to_4_5(img: Image.Image, cfg: dict) -> Image.Image:
     # Build canvas by extending edge pixels outward in all directions.
     # This eliminates any visible rectangle on gradient/studio backgrounds
     # regardless of source aspect ratio.
-    canvas_arr = np.empty((TH, TW, 3), dtype=np.uint8)
+    canvas_arr = np.zeros((TH, TW, 3), dtype=np.uint8)  # zero-initialised — no garbage pixels
 
     # Place scaled image in its position
     canvas_arr[py:py+nh, px:px+nw] = sa
