@@ -502,13 +502,20 @@ def render_nano_banana():
         if st.button("Load URL", key="nb_url_load"):
             if url_input.strip():
                 try:
+                    from .validators import validate_url, URLValidationError
                     import requests as _req
-                    r = _req.get(url_input.strip(), timeout=15,
-                                 headers={"User-Agent": "Mozilla/5.0"})
-                    r.raise_for_status()
-                    img = Image.open(io.BytesIO(r.content)).convert("RGB")
-                    st.session_state.nb_uploaded_image = img
-                    st.success("Image loaded from URL")
+                    try:
+                        safe_url = validate_url(url_input.strip())
+                    except URLValidationError as _ve:
+                        st.error(f"URL not allowed: {_ve}")
+                        safe_url = None
+                    if safe_url:
+                        r = _req.get(safe_url, timeout=15,
+                                     headers={"User-Agent": "Mozilla/5.0"})
+                        r.raise_for_status()
+                        img = Image.open(io.BytesIO(r.content)).convert("RGB")
+                        st.session_state.nb_uploaded_image = img
+                        st.success("Image loaded from URL")
                 except Exception as e:
                     st.error(f"Failed to load URL: {e}")
 
@@ -1407,8 +1414,18 @@ def render_nano_banana():
         st.markdown("---")
 
         # ── Section 8: Production Validation (admin only) ─────────────────────
-        # Only visible to yogeshwar@popclub.co — no other user sees this section.
-        if _user_email == "yogeshwar@popclub.co":
+        def _can_production_validation() -> bool:
+            try:
+                import yaml as _yaml
+                from pathlib import Path as _Path
+                from .auth import get_role, can
+                _f = _Path(__file__).parent.parent / "users.yaml"
+                _u = (_yaml.safe_load(_f.read_text()) or {}).get(_user_email, {})
+                return can(get_role(_u), "production_validation")
+            except Exception:
+                return False
+
+        if _can_production_validation():
             st.markdown("### 🚀 Production Validation")
             st.caption(
                 "Runs 15 real runtime tests against the live Railway environment. "

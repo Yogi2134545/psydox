@@ -430,6 +430,12 @@ class GeminiClient:
         }
 
     def generate_image(self, prompt: str, reference_image_bytes: bytes = None) -> bytes:
+        # MockProvider short-circuit: when DEBUG_MODE=true, never hit the API
+        from .mock_provider import get_provider as _get_provider
+        _provider = _get_provider(self)
+        if _provider is not self:
+            return _provider.generate_image(prompt, reference_image_bytes)
+
         if not self.api_key:
             raise RuntimeError("GOOGLE_API_KEY not set.")
         if not self._sdk_ok:
@@ -443,9 +449,6 @@ class GeminiClient:
         self._perf["call_count"] += 1
         _call_num = self._perf["call_count"]
 
-        print(f"\n[generate_image ENTER] call_num={_call_num}  model={model}  "
-              f"has_ref={reference_image_bytes is not None}  "
-              f"prompt={prompt[:80]!r}", flush=True)
         _log.info("generate_image  call=%d  model=%s  prompt=%r  has_ref=%s",
                   _call_num, model, prompt[:80], reference_image_bytes is not None)
 
@@ -457,26 +460,71 @@ class GeminiClient:
         parts.append(prompt)
 
         self._perf["requests"] += 1
-        t_start = time.time()
 
-        try:
-            response = self._sdk.models.generate_content(
-                model=model,
-                contents=parts,
-                config=self._types.GenerateContentConfig(
-                    response_modalities=["IMAGE", "TEXT"]
-                ),
-            )
-        except Exception as e:
+        # Retry loop: up to 3 attempts with exponential back-off for transient errors
+        _MAX_RETRIES   = 3
+        _RETRY_DELAY   = 2.0   # seconds before first retry; doubled each attempt
+        _last_exc: Exception | None = None
+
+        for _attempt in range(1, _MAX_RETRIES + 1):
+            t_start = time.time()
+            try:
+                response = self._sdk.models.generate_content(
+                    model=model,
+                    contents=parts,
+                    config=self._types.GenerateContentConfig(
+                        response_modalities=["IMAGE", "TEXT"]
+                    ),
+                )
+            except Exception as e:
+                elapsed = time.time() - t_start
+                self._perf["errors"] += 1
+                self._perf["total_time"] += elapsed
+                self._perf["timings"].append(elapsed)
+                err = str(e)
+
+                # Do not retry on auth / permission errors
+                if any(c in err for c in ("PERMISSION_DENIED", "403", "401", "404")):
+                    _log.error(
+                        "generate_content non-retryable error (attempt %d/%d)  "
+                        "model=%s  error=%s", _attempt, _MAX_RETRIES, model, err,
+                    )
+                    _last_exc = e
+                    break
+
+                _last_exc = e
+                if _attempt < _MAX_RETRIES:
+                    delay = _RETRY_DELAY * (2 ** (_attempt - 1))
+                    _log.warning(
+                        "generate_content transient error (attempt %d/%d) — "
+                        "retrying in %.1fs  error=%s", _attempt, _MAX_RETRIES, delay, err,
+                    )
+                    self._perf["retries"] += 1
+                    time.sleep(delay)
+                continue
+
             elapsed = time.time() - t_start
-            self._perf["errors"] += 1
             self._perf["total_time"] += elapsed
             self._perf["timings"].append(elapsed)
-            err = str(e)
-            tb = traceback.format_exc()
-            _log.error(
-                "generate_content failed\n  model=%s\n  prompt=%r\n  error=%s",
-                model, prompt[:80], err,
+
+            for candidate in (response.candidates or []):
+                for part in candidate.content.parts:
+                    if hasattr(part, "inline_data") and part.inline_data:
+                        _data = part.inline_data.data
+                        _log.info(
+                            "generate_image succeeded  call=%d  attempt=%d  "
+                            "model=%s  bytes=%d  elapsed=%.2fs",
+                            _call_num, _attempt, model, len(_data), elapsed,
+                        )
+                        return _data
+
+            # Response returned but contained no image data — not retryable
+            self._perf["errors"] += 1
+            no_data_err = (
+                f"Gemini returned no image data.\n"
+                f"Model: {model}\n"
+                f"Response candidates: {len(response.candidates or [])}\n"
+                f"Full response: {response}"
             )
             from .diagnostics import get_error_log
             get_error_log().add(
@@ -484,48 +532,21 @@ class GeminiClient:
                 model=model,
                 endpoint=f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
                 method="SDK generate_content",
-                request_summary=f"prompt={prompt[:120]} has_ref={reference_image_bytes is not None}",
+                request_summary=f"prompt={prompt[:120]}",
                 response_status=None,
-                response_body=err[:500],
-                error_msg=err,
-                stack_trace=tb,
-                fix_suggestion=(
-                    "Check PERMISSION_DENIED / 404 → enable image generation at "
-                    "https://aistudio.google.com. Check model name is still active."
-                ),
+                response_body=str(response)[:500],
+                error_msg="No image data in response",
+                stack_trace="",
+                fix_suggestion="Response had no inline_data parts. Check model supports IMAGE modality.",
             )
-            raise RuntimeError(
-                f"Image generation failed.\n"
-                f"Model    : {model}\n"
-                f"Error    : {err}\n\n"
-                f"If you see PERMISSION_DENIED or 404: image generation is not enabled "
-                f"for your API key. Visit https://aistudio.google.com"
-            ) from e
+            raise RuntimeError(no_data_err)
 
-        elapsed = time.time() - t_start
-        self._perf["total_time"] += elapsed
-        self._perf["timings"].append(elapsed)
-
-        for candidate in (response.candidates or []):
-            for part in candidate.content.parts:
-                if hasattr(part, "inline_data") and part.inline_data:
-                    _data = part.inline_data.data
-                    print(f"[generate_image EXIT]  call_num={_call_num}  "
-                          f"status=SUCCESS  bytes={len(_data):,}  elapsed={elapsed:.2f}s",
-                          flush=True)
-                    _log.info("generate_image succeeded  call=%d  model=%s  elapsed=%.2fs",
-                              _call_num, model, elapsed)
-                    return _data
-
-        self._perf["errors"] += 1
-        print(f"[generate_image EXIT]  call_num={_call_num}  "
-              f"status=NO_IMAGE_DATA  candidates={len(response.candidates or [])}  "
-              f"elapsed={elapsed:.2f}s", flush=True)
-        no_data_err = (
-            f"Gemini returned no image data.\n"
-            f"Model: {model}\n"
-            f"Response candidates: {len(response.candidates or [])}\n"
-            f"Full response: {response}"
+        # All retries exhausted — surface the last error
+        err  = str(_last_exc)
+        tb   = traceback.format_exc()
+        _log.error(
+            "generate_image failed after %d attempts  model=%s  error=%s",
+            _MAX_RETRIES, model, err,
         )
         from .diagnostics import get_error_log
         get_error_log().add(
@@ -533,14 +554,23 @@ class GeminiClient:
             model=model,
             endpoint=f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
             method="SDK generate_content",
-            request_summary=f"prompt={prompt[:120]}",
+            request_summary=f"prompt={prompt[:120]} has_ref={reference_image_bytes is not None}",
             response_status=None,
-            response_body=str(response)[:500],
-            error_msg="No image data in response",
-            stack_trace="",
-            fix_suggestion="Response had no inline_data parts. Check model supports IMAGE modality.",
+            response_body=err[:500],
+            error_msg=err,
+            stack_trace=tb,
+            fix_suggestion=(
+                "Check PERMISSION_DENIED / 404 → enable image generation at "
+                "https://aistudio.google.com. Check model name is still active."
+            ),
         )
-        raise RuntimeError(no_data_err)
+        raise RuntimeError(
+            f"Image generation failed after {_MAX_RETRIES} attempts.\n"
+            f"Model : {model}\n"
+            f"Error : {err}\n\n"
+            f"If you see PERMISSION_DENIED or 404: image generation is not enabled "
+            f"for your API key. Visit https://aistudio.google.com"
+        ) from _last_exc
 
     def edit_image(self, image_bytes: bytes, instruction: str) -> bytes:
         # generate_image handles perf tracking and error logging

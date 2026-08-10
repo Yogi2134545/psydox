@@ -1,8 +1,11 @@
 """Nano Banana — main orchestrator engine."""
 import io
+import logging
 import traceback
 from pathlib import Path
 from typing import Callable, Optional
+
+_log = logging.getLogger("nano_banana.engine")
 
 from PIL import Image
 
@@ -186,6 +189,15 @@ class NanoBananaEngine:
                 # Process first image (or all, configurable)
                 for url in img_urls[:1]:
                     try:
+                        from .validators import validate_url, URLValidationError
+                        try:
+                            url = validate_url(url)
+                        except URLValidationError as _ve:
+                            _log.warning("Batch SSRF block: %s — url=%s", _ve, url[:100])
+                            results["failed"] += 1
+                            if progress_cb:
+                                progress_cb(i + 1, results["total"])
+                            continue
                         resp = requests.get(url, timeout=30)
                         resp.raise_for_status()
                         src_img = Image.open(io.BytesIO(resp.content)).convert("RGB")

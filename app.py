@@ -239,11 +239,20 @@ with st.sidebar:
 
     pack = st.checkbox("Pack Shot Mode")
 
-    # Engine selector — only visible to yogeshwar@popclub.co
-    _is_admin = (
-        st.session_state.get("user_name", "") and
-        st.session_state.get("user_email", "").lower() == "yogeshwar@popclub.co"
-    )
+    # Engine selector — visible to users with ai_studio access (admin, manager, operator)
+    def _user_can_ai_studio() -> bool:
+        email = st.session_state.get("user_email", "")
+        if not email:
+            return False
+        try:
+            from nano_banana.auth import get_role, can
+            users = _load_users()
+            udata = users.get(email.lower().strip(), {})
+            return can(get_role(udata), "ai_studio")
+        except Exception:
+            return False
+
+    _is_admin = _user_can_ai_studio()
     if _is_admin and _NB_AVAILABLE:
         st.markdown("## 🤖 Processing Engine")
         engine_choice = st.radio(
