@@ -108,7 +108,10 @@ def read_excel(path: str) -> dict:
             continue
         sources = [str(v).strip() for v in row.iloc[1:] if str(v).strip() and str(v).strip().lower() != "nan"]
         if sources:
-            result.setdefault(code, []).extend(sources)
+            existing = result.setdefault(code, [])
+            for s in sources:
+                if s not in existing:   # deduplicate — same URL in multiple cols/rows
+                    existing.append(s)
     log.info(f"Found {len(result)} unique style codes.")
     return result
 
@@ -338,18 +341,13 @@ def is_solid_background(img: Image.Image) -> tuple:
     rgb = np.array(img.convert("RGB"), dtype=np.float32)
     h, w = rgb.shape[:2]
     d = _BG_SAMPLE_DEPTH
-    corner_size = min(d, h // 4, w // 4)
-    corners = np.concatenate([
-        rgb[:corner_size, :corner_size].reshape(-1, 3),
-        rgb[:corner_size, w-corner_size:].reshape(-1, 3),
-        rgb[h-corner_size:, :corner_size].reshape(-1, 3),
-        rgb[h-corner_size:, w-corner_size:].reshape(-1, 3),
-    ])
-    bg_color = np.median(corners, axis=0)
+    # Use edge strips (not corners) so products that reach a corner don't
+    # contaminate the background colour estimate.
     strips = np.concatenate([
         rgb[:d, :].reshape(-1, 3), rgb[h-d:, :].reshape(-1, 3),
         rgb[:, :d].reshape(-1, 3), rgb[:, w-d:].reshape(-1, 3),
     ])
+    bg_color = np.median(strips, axis=0)
     diffs = np.linalg.norm(strips - bg_color, axis=1)
     solid = float(np.percentile(diffs, 90)) < _BG_SOLID_TOL
     return solid, tuple(int(c) for c in bg_color)
@@ -412,51 +410,48 @@ def replace_mixed_background(img: Image.Image, cfg: dict) -> Image.Image:
         # Backgrounds are similar — not a true dual-bg, skip expensive op
         return img
 
-    bg_val = cfg.get("BG_GREY", DEFAULT_BG_GREY)
-    bg_rgb = (bg_val, bg_val, bg_val)
+    # Respect configured background colour (BG_RGB tuple takes priority over BG_GREY scalar)
+    _bgr = cfg.get("BG_RGB")
+    if isinstance(_bgr, (list, tuple)) and len(_bgr) == 3:
+        bg_rgb = tuple(int(c) for c in _bgr)
+    else:
+        bg_val = cfg.get("BG_GREY", DEFAULT_BG_GREY)
+        bg_rgb = (bg_val, bg_val, bg_val)
 
     if not _cv2_available:
         return img  # skip background replacement if cv2 not available
 
-    # Downscale to max 1000px before heavy cv2 ops — faster, same result
-    work = img.copy()
-    if max(img.size) > 1000:
-        work.thumbnail((1000, 1000), Image.BOX)
-
-    arr = np.array(work.convert("RGB"))
-    h, w = arr.shape[:2]
-    lab  = cv2.cvtColor(arr, cv2.COLOR_RGB2LAB).astype(np.float32)
+    # Work at full resolution so the mask is sharp and product edges are not blurred.
+    # Computing on a downscaled image and upscaling the mask back causes product
+    # edges to blend with the background colour, shifting the apparent product colour.
+    orig_arr = np.array(img.convert("RGB"))
+    oh, ow = orig_arr.shape[:2]
+    lab  = cv2.cvtColor(orig_arr, cv2.COLOR_RGB2LAB).astype(np.float32)
     d    = _BG_SAMPLE_DEPTH
 
-    # Sample all four edges to get a per-region bg estimate, then build a mask
     strips = np.concatenate([
-        lab[:d, :].reshape(-1, 3), lab[h-d:, :].reshape(-1, 3),
-        lab[:, :d].reshape(-1, 3), lab[:, w-d:].reshape(-1, 3),
+        lab[:d, :].reshape(-1, 3), lab[oh-d:, :].reshape(-1, 3),
+        lab[:, :d].reshape(-1, 3), lab[:, ow-d:].reshape(-1, 3),
     ])
-    bg_lab   = np.median(strips, axis=0)
-    diff     = np.linalg.norm(lab - bg_lab, axis=2)
-    thresh   = float(np.clip(np.mean(diff) + 1.2 * np.std(diff), 8.0, 40.0))
-    mask     = (diff > thresh).astype(np.uint8) * 255          # 255 = product
+    bg_lab  = np.median(strips, axis=0)
+    diff    = np.linalg.norm(lab - bg_lab, axis=2)
+    thresh  = float(np.clip(np.mean(diff) + 1.2 * np.std(diff), 8.0, 40.0))
+    mask    = (diff > thresh).astype(np.uint8) * 255   # 255 = product
 
     k    = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 13))
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  k)
 
-    # Feather the mask edge for a smooth composite
-    mask_f = cv2.GaussianBlur(mask.astype(np.float32), (7, 7), 0) / 255.0
-
-    # Scale mask back up to original image size for compositing
-    orig_arr = np.array(img.convert("RGB"))
-    oh, ow = orig_arr.shape[:2]
-    if (h, w) != (oh, ow):
-        mask_f = cv2.resize(mask_f, (ow, oh), interpolation=cv2.INTER_LINEAR)
+    # Hard binary mask — no Gaussian feather.  Feathering a low-res mask upscaled
+    # to full resolution bleeds background colour into product pixels, causing
+    # apparent colour shift and edge blur.
+    alpha = (mask.astype(np.float32) / 255.0)[:, :, np.newaxis]
 
     bg_canvas = np.full_like(orig_arr, bg_rgb, dtype=np.float32)
     fg        = orig_arr.astype(np.float32)
-    alpha     = mask_f[:, :, np.newaxis]
     composite = (fg * alpha + bg_canvas * (1 - alpha)).clip(0, 255).astype(np.uint8)
 
-    log.info("  ⚑ dual/mixed background detected — replaced with solid grey.")
+    log.info("  ⚑ dual/mixed background detected — replaced with solid colour %s.", bg_rgb)
     return Image.fromarray(composite)
 
 def extend_canvas_naturally(img: Image.Image, new_w: int, new_h: int,
@@ -596,16 +591,6 @@ def convert_to_4_5(img: Image.Image, cfg: dict) -> Image.Image:
     # Convert to RGB early, drop alpha channel (saves memory)
     img = img.convert("RGB")
 
-    # Cap input size: if source is much larger than target, pre-downscale fast
-    # with BOX filter first. This cuts LANCZOS work on huge originals (e.g. 6000×8000px)
-    MAX_SIDE = max(TW, TH) * 3  # anything more than 3× target is wasteful
-    orig_w, orig_h = img.size
-    if orig_w > MAX_SIDE or orig_h > MAX_SIDE:
-        pre_scale = MAX_SIDE / max(orig_w, orig_h)
-        pre_w = max(1, int(orig_w * pre_scale))
-        pre_h = max(1, int(orig_h * pre_scale))
-        img = img.resize((pre_w, pre_h), Image.BOX)
-
     # Only replace mixed backgrounds when a specific bg colour is chosen
     if not auto_mode:
         img = replace_mixed_background(img, cfg)
@@ -623,53 +608,39 @@ def convert_to_4_5(img: Image.Image, cfg: dict) -> Image.Image:
 
     nw = max(1, int(orig_w * scale))
     nh = max(1, int(orig_h * scale))
-    scaled = img.resize((nw, nh), Image.BICUBIC)
+    # Single high-quality resize.  The previous code did a BOX pre-downscale
+    # followed by a BICUBIC resize, accumulating two interpolation passes.
+    scaled = img.resize((nw, nh), Image.LANCZOS)
 
     # Centre on canvas
     px = (TW - nw) // 2
     py = (TH - nh) // 2
 
-    sa = np.array(scaled, dtype=np.uint8)   # nh × nw × 3
+    # Determine canvas fill colour from config — same colour as the background
+    # replacement step so the padding margin is uniform throughout.
+    _bgr = cfg.get("BG_RGB")
+    if isinstance(_bgr, (list, tuple)) and len(_bgr) == 3:
+        bg_fill = tuple(int(c) for c in _bgr)
+    elif _bgr == "auto":
+        # Auto mode: sample the dominant edge colour from the (already cleaned) image
+        _ea = np.array(scaled, dtype=np.uint8)
+        _eh, _ew = _ea.shape[:2]
+        _d = min(_BG_SAMPLE_DEPTH, _eh // 4, _ew // 4)
+        _edge = np.concatenate([
+            _ea[:_d, :].reshape(-1, 3), _ea[_eh-_d:, :].reshape(-1, 3),
+            _ea[:, :_d].reshape(-1, 3), _ea[:, _ew-_d:].reshape(-1, 3),
+        ])
+        bg_fill = tuple(int(c) for c in np.median(_edge, axis=0).astype(np.uint8))
+    else:
+        bg_val = cfg.get("BG_GREY", DEFAULT_BG_GREY)
+        bg_fill = (bg_val, bg_val, bg_val)
 
-    # Build canvas by extending edge pixels outward in all directions.
-    # This eliminates any visible rectangle on gradient/studio backgrounds
-    # regardless of source aspect ratio.
-    canvas_arr = np.zeros((TH, TW, 3), dtype=np.uint8)  # zero-initialised — no garbage pixels
-
-    # Place scaled image in its position
-    canvas_arr[py:py+nh, px:px+nw] = sa
-
-    # Top strip — repeat top row of image
-    if py > 0:
-        canvas_arr[0:py, px:px+nw] = np.repeat(sa[0:1, :, :], py, axis=0)
-
-    # Bottom strip — repeat bottom row
-    bh = TH - py - nh
-    if bh > 0:
-        canvas_arr[py+nh:TH, px:px+nw] = np.repeat(sa[-1:, :, :], bh, axis=0)
-
-    # Left strip — repeat left column
-    if px > 0:
-        canvas_arr[py:py+nh, 0:px] = np.repeat(sa[:, 0:1, :], px, axis=1)
-
-    # Right strip — repeat right column
-    rw = TW - px - nw
-    if rw > 0:
-        canvas_arr[py:py+nh, px+nw:TW] = np.repeat(sa[:, -1:, :], rw, axis=1)
-
-    # Corners — fill with the nearest image corner pixel
-    tl = sa[0, 0]
-    tr = sa[0, -1]
-    bl = sa[-1, 0]
-    br = sa[-1, -1]
-    if py > 0 and px > 0:
-        canvas_arr[0:py, 0:px] = tl
-    if py > 0 and rw > 0:
-        canvas_arr[0:py, px+nw:TW] = tr
-    if bh > 0 and px > 0:
-        canvas_arr[py+nh:TH, 0:px] = bl
-    if bh > 0 and rw > 0:
-        canvas_arr[py+nh:TH, px+nw:TW] = br
+    # Build canvas filled with the uniform background colour.
+    # Using a solid fill instead of repeating source edge pixels ensures the
+    # padding margin is one consistent colour even when the source had a
+    # dual-coloured background that wasn't fully corrected by replace_mixed_background.
+    canvas_arr = np.full((TH, TW, 3), bg_fill, dtype=np.uint8)
+    canvas_arr[py:py+nh, px:px+nw] = np.array(scaled, dtype=np.uint8)
 
     return Image.fromarray(canvas_arr)
 
