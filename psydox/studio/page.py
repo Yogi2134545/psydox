@@ -947,6 +947,8 @@ def _props_ai_lifestyle(cur: bytes, user_email: str) -> None:
                   user_email=user_email, is_ai=True)
 
 
+_MODEL_ANGLES = ["Front", "Back", "¾ Left", "¾ Right", "Left Side", "Right Side"]
+
 def _props_ai_model(cur: bytes, user_email: str) -> None:
     provider_id = _render_provider_selector()
     gender    = st.selectbox("Gender", ["Female", "Male", "Non-binary"], key="mod_gender")
@@ -962,6 +964,19 @@ def _props_ai_model(cur: bytes, user_email: str) -> None:
     product_desc = st.text_input("Product description", placeholder="e.g. Navy hoodie",
                                   key="mod_prod")
 
+    st.markdown('<div class="psx-props-header">ANGLES</div>', unsafe_allow_html=True)
+    selected_angles = st.multiselect(
+        "Select angles to generate",
+        options=_MODEL_ANGLES,
+        default=["Front"],
+        key="mod_angles",
+    )
+
+    if not selected_angles:
+        st.info("Select at least one angle.")
+        return
+
+    n = len(selected_angles)
     inputs = {
         "image_bytes":  cur,
         "gender":       gender,
@@ -969,9 +984,11 @@ def _props_ai_model(cur: bytes, user_email: str) -> None:
         "ethnicity":    ethnicity,
         "style":        style,
         "product_desc": product_desc,
+        "angles":       selected_angles,
         "_provider_id": provider_id,
     }
-    _apply_button("ai_model", cur, "👤 Generate Model Shot", inputs=inputs,
+    btn_label = f"👤 Generate {n} Model Shot{'s' if n > 1 else ''}"
+    _apply_button("ai_model", cur, btn_label, inputs=inputs,
                   user_email=user_email, is_ai=True)
 
 
@@ -1013,24 +1030,54 @@ def _props_ai_angles(cur: bytes, user_email: str) -> None:
     st.markdown('<div class="psx-props-header">SELECT ANGLES</div>', unsafe_allow_html=True)
 
     all_angles = list_angles()
-    angle_labels = {a.angle_id: f"{a.display_name}" for a in all_angles}
 
-    # Default: all 8 angles selected
-    default_selected = [a.angle_id for a in all_angles]
-    selected_ids = st.multiselect(
-        "Angles to generate",
-        options=list(angle_labels.keys()),
-        default=default_selected,
-        format_func=lambda x: angle_labels.get(x, x),
-        key="ai_angles_sel",
-    )
+    # Initialise checkbox state (unchecked by default — user must actively choose)
+    for a in all_angles:
+        _k = f"angle_cb_{a.angle_id}"
+        if _k not in st.session_state:
+            st.session_state[_k] = False
 
+    # Quick-select row
+    _qa, _qc = st.columns(2)
+    if _qa.button("☑ Select All", key="angles_sel_all", use_container_width=True):
+        for a in all_angles:
+            st.session_state[f"angle_cb_{a.angle_id}"] = True
+        st.rerun()
+    if _qc.button("☐ Clear All", key="angles_sel_clear", use_container_width=True):
+        for a in all_angles:
+            st.session_state[f"angle_cb_{a.angle_id}"] = False
+        st.rerun()
+
+    # Individual angle checkboxes in a 2-column grid
+    _col_a, _col_b = st.columns(2)
+    selected_ids: list[str] = []
+    for i, angle in enumerate(all_angles):
+        _col = _col_a if i % 2 == 0 else _col_b
+        _checked = _col.checkbox(
+            angle.display_name,
+            key=f"angle_cb_{angle.angle_id}",
+            help=angle.camera_description,
+        )
+        if _checked:
+            selected_ids.append(angle.angle_id)
+
+    # Budget summary
     if selected_ids:
-        budget = len(selected_ids) * 0.50
-        st.caption(f"Estimated max budget: ₹{budget:.2f} ({len(selected_ids)} angles × ₹0.50)")
+        _budget = len(selected_ids) * 0.50
+        st.caption(
+            f"**{len(selected_ids)} angle(s) selected** · "
+            f"max budget ₹{_budget:.2f} (₹0.50 each)"
+        )
+    else:
+        st.caption("Tick the angles you want to generate above.")
 
     if not selected_ids:
-        st.warning("Select at least one angle.")
+        st.button(
+            "🎯 Generate Angles",
+            use_container_width=True, type="primary",
+            key="apply_ai_angles", disabled=True,
+        )
+        _render_angle_results()
         return
 
     if not st.button(
@@ -1086,38 +1133,51 @@ def _render_angle_results() -> None:
     if not result or not result.get("outputs"):
         return
 
+    outputs = result["outputs"]
+    approved = [o for o in outputs if o.get("outcome") == "APPROVED"]
+    review   = [o for o in outputs if o.get("outcome") == "REVIEW"]
+    failed   = [o for o in outputs if o.get("outcome") in ("HARD_FAIL", "FAILED", "BUDGET_CONFLICT")]
+
     st.markdown("---")
-    st.markdown('<div class="psx-props-header">ANGLE RESULTS</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="psx-props-header">RESULTS'
+        f' — {len(approved)}✅ {len(review)}👁 {len(failed)}❌'
+        f' of {len(outputs)}</div>',
+        unsafe_allow_html=True,
+    )
 
     _OUTCOME_STYLE = {
-        "APPROVED":       ("✅", "#22c55e"),
-        "REVIEW":         ("👁️", "#f59e0b"),
-        "HARD_FAIL":      ("❌", "#ef4444"),
-        "FAILED":         ("❌", "#ef4444"),
+        "APPROVED":        ("✅", "#22c55e"),
+        "REVIEW":          ("👁️", "#f59e0b"),
+        "HARD_FAIL":       ("❌", "#ef4444"),
+        "FAILED":          ("❌", "#ef4444"),
         "BUDGET_CONFLICT": ("🚫", "#94a3b8"),
     }
 
-    for out in result["outputs"]:
+    for out in outputs:
         outcome = out.get("outcome", "UNKNOWN")
-        icon, color = _OUTCOME_STYLE.get(outcome, ("?", "#888"))
-        label = out.get("label", "")
+        icon, _  = _OUTCOME_STYLE.get(outcome, ("?", "#888"))
+        name  = out.get("display_name") or out.get("label", "").split("—")[0].strip()
         cost  = out.get("cost_inr", 0.0)
         qual  = out.get("quality_score", 0)
         fid   = out.get("fidelity_score", 0.0)
 
-        with st.expander(f"{icon} {label}", expanded=(outcome == "APPROVED")):
+        with st.expander(f"{icon} {name} ({outcome})", expanded=(outcome == "APPROVED")):
             if out.get("bytes"):
                 st.image(out["bytes"], use_container_width=True)
                 st.caption(
                     f"Quality: {qual}/100  |  Fidelity: {fid:.0%}  |  Cost: ₹{cost:.3f}"
                 )
                 st.download_button(
-                    f"⬇ Download {label.split('—')[0].strip()}",
+                    f"⬇ Download {name}",
                     data=out["bytes"],
                     file_name=f"{out.get('angle_id', 'angle').lower()}_output.jpg",
                     mime="image/jpeg",
-                    key=f"dl_angle_{out.get('angle_id', label)}",
+                    key=f"dl_angle_{out.get('angle_id', name)}",
                 )
+            else:
+                reason = out.get("reason") or outcome
+                st.caption(f"No image produced. Reason: {reason}")
                 if outcome == "APPROVED":
                     if st.button(
                         "Set as current image",

@@ -49,18 +49,31 @@ def build_lifestyle_prompt(style: str, product_desc: str = "") -> str:
     )
 
 
+_MODEL_ANGLE_MAP = {
+    "Front":         "full-body front-facing view, model facing the camera directly",
+    "Back":          "full-body rear view, model facing away from the camera",
+    "¾ Left":        "three-quarter front view angled to the left",
+    "¾ Right":       "three-quarter front view angled to the right",
+    "Left Side":     "full-body left profile view, model facing left",
+    "Right Side":    "full-body right profile view, model facing right",
+}
+
+
 def build_model_prompt(
     gender: str,
     age: str,
     ethnicity: str,
     style: str,
     product_desc: str = "",
+    angle: str = "Front",
 ) -> str:
     """Build an optimized prompt for AI model generation."""
     product_part = f" wearing/using {product_desc}" if product_desc else ""
+    angle_desc   = _MODEL_ANGLE_MAP.get(angle, "")
+    angle_part   = f", {angle_desc}" if angle_desc else ""
     return (
         f"Professional fashion model photography, {gender.lower()} model, "
-        f"age range {age}, {ethnicity} ethnicity, {style} style{product_part}. "
+        f"age range {age}, {ethnicity} ethnicity, {style} style{product_part}{angle_part}. "
         "CRITICAL — preserve the product from the reference image EXACTLY: "
         "same color, same pattern, same print, same logo, same branding, same design — "
         "do NOT change or reinterpret the product's appearance in any way. "

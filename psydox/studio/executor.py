@@ -148,10 +148,28 @@ def _exec_lifestyle(inputs: dict) -> dict:
 
 
 def _exec_model_gen(inputs: dict) -> dict:
-    ctx = _build_context(inputs)
+    ctx   = _build_context(inputs)
     clean = {k: v for k, v in inputs.items() if not k.startswith("_")}
     from psydox.features.model_gen.service import ModelGenFeature
-    return ModelGenFeature().execute(clean, ctx)
+
+    angles = clean.pop("angles", None) or ["Front"]
+    feature = ModelGenFeature()
+    all_outputs: list = []
+    all_errors:  list = []
+
+    for angle in angles:
+        result = feature.execute({**clean, "angle": angle}, ctx)
+        if result.get("success") and result.get("outputs"):
+            all_outputs.extend(result["outputs"])
+        else:
+            all_errors.extend(result.get("errors") or [f"Generation failed for {angle}"])
+
+    return {
+        "success":  len(all_outputs) > 0,
+        "outputs":  all_outputs,
+        "errors":   all_errors,
+        "metadata": {"angles": angles, "total": len(angles), "generated": len(all_outputs)},
+    }
 
 
 def execute_angle_generation(inputs: dict, user_email: str) -> dict:
@@ -181,26 +199,26 @@ def execute_angle_generation(inputs: dict, user_email: str) -> dict:
             product_id=product_id,
         )
 
+        # Include ALL angle results so the UI can show complete per-angle status,
+        # even for angles that failed with no image bytes.
         outputs = []
+        errors  = []
         for ar in multi.angle_results:
-            if ar.image_bytes:
-                outputs.append({
-                    "bytes":   ar.image_bytes,
-                    "label":   f"{ar.display_name} — {ar.outcome}",
-                    "mime":    "image/jpeg",
-                    "angle_id": ar.angle_id,
-                    "outcome": ar.outcome,
-                    "quality_score": ar.quality_score,
-                    "fidelity_score": ar.fidelity_score,
-                    "cost_inr": ar.cost_inr,
-                    "attempts": ar.attempts,
-                })
-
-        errors = [
-            f"{ar.display_name}: {ar.reason}"
-            for ar in multi.angle_results
-            if ar.outcome in ("HARD_FAIL", "FAILED", "BUDGET_CONFLICT")
-        ]
+            outputs.append({
+                "bytes":          ar.image_bytes,   # None when failed
+                "label":          f"{ar.display_name} — {ar.outcome}",
+                "mime":           "image/jpeg",
+                "angle_id":       ar.angle_id,
+                "display_name":   ar.display_name,
+                "outcome":        ar.outcome,
+                "quality_score":  ar.quality_score,
+                "fidelity_score": ar.fidelity_score,
+                "cost_inr":       ar.cost_inr,
+                "attempts":       ar.attempts,
+                "reason":         getattr(ar, "reason", ""),
+            })
+            if ar.outcome in ("HARD_FAIL", "FAILED", "BUDGET_CONFLICT"):
+                errors.append(f"{ar.display_name}: {getattr(ar, 'reason', ar.outcome)}")
 
         return {
             "success":  multi.approved > 0 or multi.review > 0,

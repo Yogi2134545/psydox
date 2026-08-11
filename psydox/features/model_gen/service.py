@@ -45,6 +45,7 @@ class ModelGenFeature(FeatureModule):
         ethnicity    = inputs.get("ethnicity", "South Asian / Indian")
         style        = inputs.get("style", "Natural / Minimal")
         product_desc = inputs.get("product_desc", "")
+        angle        = inputs.get("angle", "Front")
         ratio_wh     = context.get("ratio_wh")
 
         try:
@@ -53,7 +54,7 @@ class ModelGenFeature(FeatureModule):
             from psydox.ai_core.router import TaskType
             from nano_banana.prompt_builder import build_model_prompt
 
-            prompt = build_model_prompt(gender, age_group, ethnicity, style, product_desc)
+            prompt = build_model_prompt(gender, age_group, ethnicity, style, product_desc, angle)
             ctx    = PromptContext(product_desc=product_desc, style=style)
 
             request = AIRequest(
@@ -77,7 +78,7 @@ class ModelGenFeature(FeatureModule):
             buf = io.BytesIO()
             img.save(buf, format="JPEG", quality=92)
 
-            label = f"{gender} {age_group} · {ethnicity}"
+            label = f"{gender} {age_group} · {ethnicity} · {angle}"
             return {
                 "success": True,
                 "outputs": [{"bytes": buf.getvalue(), "label": label, "mime": "image/jpeg"}],
