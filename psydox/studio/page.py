@@ -355,17 +355,21 @@ def _render_excel_import() -> None:
 
     Excel format:
       Column 1:  STYLE_CODE  (product identifier)
-      Column 2+: Image URLs  (up to 12 columns of image links)
+      Column 2+: Image URLs  (up to 12 columns of image links per row)
 
-    The user uploads the file → sees a list of style codes → picks one
-    → the first image URL is downloaded and loaded into the Studio.
+    Two modes:
+      • Load single  — pick one style code + URL → open in Studio editor
+      • Run Bulk     — process ALL style codes, download ZIP
     """
+    from psydox.batch.processor import RATIO_PRESETS, BG_OPTIONS, BatchConfig
+    from psydox.batch.excel_reader import read_excel_bytes, download_image
+
     st.markdown(
         '<div class="psx-props-header">EXCEL CATALOG IMPORT</div>',
         unsafe_allow_html=True,
     )
     st.caption(
-        "Column 1 = Style Code, Columns 2–13 = Image URLs. "
+        "Column 1 = Style Code  |  Columns 2–13 = Image URLs. "
         "Supports Google Drive, Dropbox, OneDrive, and direct links."
     )
 
@@ -375,98 +379,157 @@ def _render_excel_import() -> None:
         key="studio_excel_uploader",
         label_visibility="collapsed",
     )
-
     if excel_file:
         st.session_state["studio_excel_data"] = excel_file.getvalue()
-        st.session_state.pop("studio_excel_selected", None)
+        st.session_state.pop("studio_batch_result", None)
 
     excel_data: bytes | None = st.session_state.get("studio_excel_data")
     if not excel_data:
         st.info("Upload an Excel file to import product images from a catalog.")
         return
 
-    # Parse
-    try:
-        from psydox.batch.excel_reader import read_excel_bytes
-    except ImportError:
-        st.error("Excel reader not available — check psydox/batch/excel_reader.py.")
-        return
-
-    result = read_excel_bytes(excel_data)
-
-    if result.errors:
-        for err in result.errors:
+    read_result = read_excel_bytes(excel_data)
+    if read_result.errors:
+        for err in read_result.errors:
             st.error(err)
         return
-
-    for warn in result.warnings:
+    for warn in read_result.warnings:
         st.warning(warn)
 
     st.success(
-        f"Loaded **{result.total_styles}** style codes with "
-        f"**{result.total_urls}** image URLs."
+        f"**{read_result.total_styles}** style codes · "
+        f"**{read_result.total_urls}** image URLs"
     )
 
-    # Style selector
-    style_codes = sorted(result.styles.keys())
-    selected_code = st.selectbox(
-        "Select style code to open in Studio",
-        options=style_codes,
-        key="studio_excel_code_sel",
-    )
+    # ── Output settings ───────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown('<div class="psx-props-header">OUTPUT SETTINGS</div>', unsafe_allow_html=True)
 
-    if not selected_code:
-        return
-
-    urls = result.styles[selected_code]
-    st.caption(f"{len(urls)} image URL(s) for **{selected_code}**")
-
-    # URL picker
-    if len(urls) == 1:
-        chosen_url = urls[0]
-        st.caption(f"URL: {chosen_url[:80]}{'…' if len(chosen_url) > 80 else ''}")
+    preset_options = list(RATIO_PRESETS.keys())
+    chosen_preset  = st.selectbox("Ratio", preset_options, index=0, key="excel_ratio")
+    preset_size    = RATIO_PRESETS[chosen_preset]
+    if preset_size is None:
+        col_w, col_h = st.columns(2)
+        custom_w = col_w.number_input("Width",  360, 4320, 1080, key="excel_cust_w")
+        custom_h = col_h.number_input("Height", 360, 5400, 1350, key="excel_cust_h")
+        target_w, target_h = int(custom_w), int(custom_h)
     else:
-        chosen_url = st.selectbox(
-            "Image URL",
-            options=urls,
-            format_func=lambda u: u[:90] + ("…" if len(u) > 90 else ""),
-            key="studio_excel_url_sel",
+        target_w, target_h = preset_size
+
+    bg_name = st.selectbox("Background", list(BG_OPTIONS.keys()), key="excel_bg")
+    bg_val  = BG_OPTIONS[bg_name]
+
+    jq = st.slider("JPEG Quality", 50, 95, 92, key="excel_jq")
+
+    # ── Tabs: Single load vs Bulk run ──────────────────────────────────────────
+    st.markdown("---")
+    t_single, t_bulk = st.tabs(["Open Single in Studio", "⚡ Run Bulk (ZIP)"])
+
+    with t_single:
+        style_codes   = sorted(read_result.styles.keys())
+        selected_code = st.selectbox(
+            "Style code", style_codes, key="studio_excel_code_sel",
+        )
+        if selected_code:
+            urls = read_result.styles[selected_code]
+            st.caption(f"{len(urls)} URL(s)")
+            if len(urls) == 1:
+                chosen_url = urls[0]
+            else:
+                chosen_url = st.selectbox(
+                    "Image URL", urls,
+                    format_func=lambda u: u[:85] + ("…" if len(u) > 85 else ""),
+                    key="studio_excel_url_sel",
+                )
+
+            if st.button(
+                f"Load '{selected_code}' into Studio",
+                use_container_width=True, type="primary",
+                key="studio_excel_load_btn",
+            ):
+                with st.spinner(f"Downloading {selected_code}…"):
+                    img_bytes = download_image(chosen_url, timeout=15)
+                if not img_bytes:
+                    st.error(f"Could not download image. Check that the URL is public.")
+                    return
+                try:
+                    from psydox.security.upload import validate_upload
+                    v = validate_upload(img_bytes, f"{selected_code}.jpg")
+                    if not v.valid:
+                        for e in v.errors: st.error(e)
+                        return
+                    for w in v.warnings: st.warning(w)
+                except Exception:
+                    pass
+                st.session_state.studio_history     = [{"bytes": img_bytes, "label": f"Original ({selected_code})"}]
+                st.session_state.studio_history_idx = 0
+                st.session_state.studio_project_name = selected_code
+                st.rerun()
+
+    with t_bulk:
+        n_styles = read_result.total_styles
+        n_imgs   = read_result.total_urls
+        st.caption(
+            f"Will download **{n_imgs}** images across **{n_styles}** style codes, "
+            f"resize to **{target_w}×{target_h}** ({chosen_preset.split('(')[0].strip()}), "
+            f"background **{bg_name}**, JPEG quality **{jq}**, output as ZIP."
         )
 
-    if st.button(
-        f"Load '{selected_code}' into Studio",
-        use_container_width=True,
-        type="primary",
-        key="studio_excel_load_btn",
-    ):
-        with st.spinner(f"Downloading image for {selected_code}…"):
-            from psydox.batch.excel_reader import download_image
-            img_bytes = download_image(chosen_url)
+        if st.button(
+            f"⚡ Run Bulk ({n_styles} styles)",
+            use_container_width=True, type="primary",
+            key="studio_bulk_run_btn",
+        ):
+            from psydox.batch.processor import run_batch
 
-        if not img_bytes:
-            st.error(
-                f"Could not download the image for **{selected_code}**. "
-                "Check that the URL is public and accessible."
+            cfg = BatchConfig(
+                target_w=target_w,
+                target_h=target_h,
+                jpeg_quality=jq,
+                bg_rgb=bg_val,
             )
-            return
 
-        # Validate with the same security check as a manual upload
-        try:
-            from psydox.security.upload import validate_upload
-            validation = validate_upload(img_bytes, f"{selected_code}.jpg")
-            if not validation.valid:
-                for e in validation.errors:
-                    st.error(e)
-                return
-            for w in validation.warnings:
-                st.warning(w)
-        except Exception:
-            pass  # skip validation if security module unavailable
+            progress_bar  = st.progress(0.0, text="Starting…")
+            status_text   = st.empty()
 
-        st.session_state.studio_history     = [{"bytes": img_bytes, "label": f"Original ({selected_code})"}]
-        st.session_state.studio_history_idx = 0
-        st.session_state.studio_project_name = selected_code
-        st.rerun()
+            def _cb(done: int, total: int, style: str) -> None:
+                pct = done / total if total > 0 else 0
+                progress_bar.progress(pct, text=f"Processing {style}… ({done}/{total})")
+                status_text.caption(f"Last: {style}")
+
+            with st.spinner("Running batch…"):
+                batch_result = run_batch(read_result.styles, cfg, progress_cb=_cb)
+
+            progress_bar.empty()
+            status_text.empty()
+            st.session_state["studio_batch_result"] = batch_result
+
+        # Show result / download
+        batch_result = st.session_state.get("studio_batch_result")
+        if batch_result:
+            c1, c2, c3 = st.columns(3)
+            c1.metric("✓ Processed", batch_result.success)
+            c2.metric("✗ Failed DL", batch_result.failed)
+            c3.metric("⚠ Skipped",   batch_result.skipped)
+
+            if batch_result.errors:
+                with st.expander(f"Errors ({len(batch_result.errors)})"):
+                    for e in batch_result.errors[:20]:
+                        st.caption(e)
+
+            if batch_result.zip_bytes:
+                mb = len(batch_result.zip_bytes) / 1024 / 1024
+                st.success(f"ZIP ready — {mb:.1f} MB")
+                st.download_button(
+                    f"⬇ Download ZIP ({mb:.1f} MB)",
+                    data=batch_result.zip_bytes,
+                    file_name="psydox_batch.zip",
+                    mime="application/zip",
+                    use_container_width=True,
+                    key="studio_bulk_dl_btn",
+                )
+            elif batch_result.success == 0:
+                st.warning("No images were processed. Check that your URLs are publicly accessible.")
 
 
 # ── Toolbar ───────────────────────────────────────────────────────────────────
@@ -690,18 +753,25 @@ def _props_background(cur: bytes, user_email: str) -> None:
 
 
 def _props_resize(cur: bytes, user_email: str) -> None:
+    from psydox.batch.processor import RATIO_PRESETS
+
     img = Image.open(io.BytesIO(cur))
     ow, oh = img.size
-
     st.caption(f"Original: {ow} × {oh} px")
-    lock = st.checkbox("Lock aspect ratio", value=True, key="resize_lock")
 
-    tw = st.number_input("Width (px)",  64, 8000, ow, step=10, key="resize_w")
-    if lock:
-        th = int(tw * oh / ow) if ow else oh
-        st.caption(f"Height → {th} px (locked)")
+    # Ratio preset selector
+    preset_options = list(RATIO_PRESETS.keys())
+    chosen_preset = st.selectbox("Ratio preset", preset_options,
+                                 index=0, key="resize_preset")
+    preset_size = RATIO_PRESETS[chosen_preset]
+
+    if preset_size is not None:
+        tw, th = preset_size
+        st.caption(f"Output: {tw} × {th} px")
     else:
-        th = st.number_input("Height (px)", 64, 8000, oh, step=10, key="resize_h")
+        col_w, col_h = st.columns(2)
+        tw = col_w.number_input("Width (px)",  64, 8000, ow, step=10, key="resize_w")
+        th = col_h.number_input("Height (px)", 64, 8000, oh, step=10, key="resize_h")
 
     mode_map = {"Fit (letterbox)": "fit", "Fill (crop)": "fill", "Stretch": "stretch"}
     fit_mode = mode_map[st.selectbox("Fit mode", list(mode_map.keys()), key="resize_fit")]
