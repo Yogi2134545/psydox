@@ -10,6 +10,10 @@ devesh@popclub.co:
   name: Devesh
   role: operator
   password_hash: $2b$12$sSylQNXMOaFTtP8dHxP71.2U6S3Jpxgi4phHfly224SN6n0Am.Ec2
+test@popclub.co:
+  name: TestUser
+  role: operator
+  password_hash: $2b$12$QyYBId90ba9OwJR4zHsnjOJuagWqnBpOJ.0FWKZVyVpWLxjQxB.vm
 yogeshwar@popclub.co:
   name: Yogeshwar
   role: admin
