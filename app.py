@@ -197,10 +197,16 @@ def _worker(job_id, cfg, out_dir):
                      if f.is_file() and f.suffix.lower() in (".jpg",".jpeg",".png",".webp")]
         zip_path = None
         if out_files:
-            zp = Path(out_dir) / "_psydox_output.zip"
-            with zipfile.ZipFile(zp, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
+            # Build ZIP in memory first — writing to disk mid-stream can leave a
+            # corrupt file if the process is killed before the central directory
+            # is flushed.  Writing the completed bytes in one shot is safer.
+            import io as _io
+            _zbuf = _io.BytesIO()
+            with zipfile.ZipFile(_zbuf, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
                 for f in out_files:
                     zf.write(f, f.relative_to(out_dir))
+            zp = Path(out_dir) / "_psydox_output.zip"
+            zp.write_bytes(_zbuf.getvalue())
             zip_path = str(zp)
 
         _JOBS[job_id]["zip_path"] = zip_path
@@ -508,8 +514,16 @@ elif job.get("results"):
     if zp and Path(zp).exists():
         if not st.session_state.zip_bytes:
             try:
+                import io as _io
                 with open(zp, "rb") as f:
-                    st.session_state.zip_bytes = f.read()
+                    _raw = f.read()
+                zipfile.ZipFile(_io.BytesIO(_raw)).close()   # validate before serving
+                st.session_state.zip_bytes = _raw
+            except zipfile.BadZipFile:
+                st.error("⚠️ The ZIP file was corrupted (server may have restarted mid-write). "
+                         "Click **🔄 New Run** in the sidebar to process again.")
+                st.session_state.job_id = None
+                st.query_params.clear()
             except Exception as e:
                 st.error(f"Could not load ZIP: {e}")
 
