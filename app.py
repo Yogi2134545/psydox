@@ -218,38 +218,40 @@ def _worker(job_id, cfg, out_dir):
 if "psydox_nav" not in st.session_state:
     st.session_state.psydox_nav = "dashboard"
 
+from psydox.access import can_access_ai_studio as _can_ai, require_owner as _require_owner
+_user_is_owner = _can_ai(st.session_state.get("user_email", ""))
+
 # ─── Dashboard view ──────────────────────────────────────────────────────────
 if st.session_state.psydox_nav == "dashboard":
     try:
         from psydox.dashboard.page import render_dashboard
-        from psydox.core.registry import get_registry
-
-        with st.sidebar:
-            st.markdown("---")
-            if st.button("⚡ Classic Processing", use_container_width=True):
-                st.session_state.psydox_nav = "classic"
-                st.rerun()
-            st.markdown(f"<div style='color:#888;font-size:0.8rem;padding-top:8px'>"
-                        f"👤 {st.session_state.user_name}</div>", unsafe_allow_html=True)
-            if st.button("Sign Out", key="so_dash"):
-                st.session_state.logged_in = False
-                st.rerun()
 
         def _on_feature(fid):
-            st.session_state.psydox_nav = f"feature:{fid}"
+            # Route Quick Create features into the Studio with that tool pre-selected
+            st.session_state.psydox_nav = "studio"
+            st.session_state.studio_start_tool = fid
             st.rerun()
 
         def _go_classic():
-            st.session_state.psydox_nav = "classic"
+            st.session_state.psydox_nav = "studio"
+            st.session_state.studio_start_tool = "background"
             st.rerun()
 
         def _go_ai():
-            st.session_state.nb_mode = True
-            st.session_state.psydox_nav = "classic"
+            # AI Studio button — owner only (UI hides it, backend enforces)
+            if not _user_is_owner:
+                st.error("AI Studio is restricted to the owner account.")
+                return
+            st.session_state.psydox_nav = "studio"
+            st.session_state.studio_start_tool = "ai_background"
             st.rerun()
 
         def _new_project():
             st.session_state.psydox_nav = "new_project"
+            st.rerun()
+
+        def _go_batch():
+            st.session_state.psydox_nav = "batch"
             st.rerun()
 
         render_dashboard(
@@ -257,13 +259,36 @@ if st.session_state.psydox_nav == "dashboard":
             user_name=st.session_state.user_name,
             on_feature_select=_on_feature,
             on_classic=_go_classic,
-            on_ai_studio=_go_ai,
+            on_ai_studio=_go_ai if _user_is_owner else None,
             on_new_project=_new_project,
+            on_batch=_go_batch,
         )
     except Exception as e:
+        _log.exception("Dashboard render failed")
         st.error(f"Dashboard error: {e}")
-        st.session_state.psydox_nav = "classic"
-        st.rerun()
+        import traceback; st.code(traceback.format_exc())
+    st.stop()
+
+# ─── Studio view (single-image editor — Classic + AI) ────────────────────────
+if st.session_state.psydox_nav == "studio":
+    try:
+        from psydox.studio.page import render_studio
+
+        def _back_to_dash():
+            st.session_state.psydox_nav = "dashboard"
+            st.rerun()
+
+        start_tool = st.session_state.pop("studio_start_tool", None)
+        render_studio(
+            user_email=st.session_state.user_email,
+            user_name=st.session_state.user_name,
+            on_back=_back_to_dash,
+            start_tool=start_tool,
+        )
+    except Exception as e:
+        _log.exception("Studio render failed")
+        st.error(f"Studio error: {e}")
+        import traceback; st.code(traceback.format_exc())
     st.stop()
 
 # ─── New project view ────────────────────────────────────────────────────────
@@ -292,72 +317,23 @@ if st.session_state.psydox_nav == "new_project":
             st.error(f"Could not create project: {e}")
     st.stop()
 
-# ─── Feature (AI Studio via registry) view ───────────────────────────────────
-if st.session_state.psydox_nav.startswith("feature:"):
-    fid = st.session_state.psydox_nav.split(":", 1)[1]
-    with st.sidebar:
-        if st.button("← Back to Dashboard"):
-            st.session_state.psydox_nav = "dashboard"
-            st.rerun()
-
-    # Dispatch to classic feature via registry
-    try:
-        from psydox.core.registry import get_registry
-        from psydox.security.upload import validate_upload
-        feature = get_registry().get(fid)
-        if feature and not feature.manifest.requires_ai:
-            st.markdown(f"## {feature.manifest.icon} {feature.manifest.name}")
-            st.caption(feature.manifest.description)
-            uploaded_file = st.file_uploader("Upload image", type=["jpg","jpeg","png","webp"])
-            if uploaded_file:
-                img_bytes = uploaded_file.getvalue()
-                val_result = validate_upload(img_bytes, uploaded_file.name)
-                if not val_result.valid:
-                    for e in val_result.errors:
-                        st.error(e)
-                else:
-                    for w in val_result.warnings:
-                        st.warning(w)
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.image(img_bytes, caption="Original", use_container_width=True)
-                    if st.button(f"Run {feature.manifest.name}", type="primary"):
-                        with st.spinner("Processing..."):
-                            result = feature.execute({"image_bytes": img_bytes, "operation": "packshot"}, {})
-                        if result["success"] and result["outputs"]:
-                            for out in result["outputs"]:
-                                with col2:
-                                    st.image(out["bytes"], caption=out.get("label","Result"),
-                                             use_container_width=True)
-                                st.download_button(
-                                    f"⬇ Download {out.get('label','')}",
-                                    data=out["bytes"],
-                                    file_name=f"{fid}_result.jpg",
-                                    mime=out.get("mime","image/jpeg"),
-                                )
-                        else:
-                            for err in result.get("errors", []):
-                                st.error(err)
-            st.stop()
-    except Exception:
-        pass
-
-    if fid in ("background", "lifestyle", "model_gen") and _NB_AVAILABLE:
-        st.session_state.nb_mode = True
-        st.session_state.psydox_nav = "classic"
-        st.rerun()
-    else:
-        st.info(f"Feature **{fid}** — open AI Studio for full access.")
-        st.stop()
+# ─── Batch processing view (old classic Excel processor) ─────────────────────
+# All nav states OTHER than "dashboard", "studio", "new_project" fall through
+# to the batch processing UI below (psydox_nav == "batch" or legacy "classic").
+# This preserves the existing Excel batch processor exactly as-is.
+if st.session_state.psydox_nav not in ("batch", "classic"):
+    # Unknown nav state — redirect to dashboard
+    st.session_state.psydox_nav = "dashboard"
+    st.rerun()
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  HEADER + SIDEBAR
+#  BATCH PROCESSING HEADER + SIDEBAR
 # ═════════════════════════════════════════════════════════════════════════════
 c1, c2, c3 = st.columns([6, 1, 1])
 with c1:
     st.markdown("""<div style='background:#ff6600;padding:10px 20px;border-radius:8px;
     margin-bottom:16px;'><span style='color:white;font-size:22px;font-weight:bold'>
-    ⚡ Psydox</span> <span style='color:#ffe0c0;font-size:13px'>Image Processing Engine
+    ⚡ Psydox</span> <span style='color:#ffe0c0;font-size:13px'>Batch Processing
     </span></div>""", unsafe_allow_html=True)
 with c2:
     if st.button("🏠 Dashboard", use_container_width=True):
@@ -414,31 +390,10 @@ with st.sidebar:
 
     pack = st.checkbox("Pack Shot Mode")
 
-    # Engine selector — visible to users with ai_studio access (admin, manager, operator)
-    def _user_can_ai_studio() -> bool:
-        email = st.session_state.get("user_email", "")
-        if not email:
-            return False
-        try:
-            from nano_banana.auth import get_role, can
-            users = _load_users()
-            udata = users.get(email.lower().strip(), {})
-            return can(get_role(udata), "ai_studio")
-        except Exception:
-            return False
-
-    _is_admin = _user_can_ai_studio()
-    if _is_admin and _NB_AVAILABLE:
-        st.markdown("## 🤖 Processing Engine")
-        engine_choice = st.radio(
-            "Engine",
-            ["⚡ Classic Processing", "⚡ Psydox AI Studio"],
-            key="engine_choice",
-            label_visibility="collapsed",
-        )
-        st.session_state.nb_mode = (engine_choice == "⚡ Psydox AI Studio")
-    else:
-        st.session_state.nb_mode = False
+    # AI Studio is now in the unified Studio workspace — not in batch mode.
+    st.session_state.nb_mode = False
+    if _user_is_owner:
+        st.info("💡 Use **⚡ Classic Studio** or **✨ AI Studio** from the dashboard for single-image editing.")
 
     st.markdown("---")
 
@@ -623,8 +578,5 @@ elif not job.get("running") and not job.get("results") and not job.get("error"):
       <h3 style='color:#666'>Upload your Excel and click RUN</h3>
     </div>""", unsafe_allow_html=True)
 
-# ═══════════════════════════════════════════════════════════════════
-#  NANO BANANA AI STUDIO
-# ═══════════════════════════════════════════════════════════════════
-if st.session_state.get("nb_mode"):
-    _render_nano_banana()
+# Nano Banana is now an internal engine only.
+# Single-image AI work happens in the Studio (psydox_nav="studio").

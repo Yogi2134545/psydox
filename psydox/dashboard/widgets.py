@@ -70,11 +70,16 @@ def render_stats_row(stats: dict, ai_stats: dict | None = None) -> None:
 # ── Quick Create ──────────────────────────────────────────────────────────────
 
 def render_quick_create(on_select=None, pinned_ids: list | None = None,
-                         cols: int = 4) -> None:
-    """Auto-populated from feature registry.  Pinned features appear first."""
+                         cols: int = 4, show_ai: bool = True) -> None:
+    """Auto-populated from feature registry.  Pinned features appear first.
+    When show_ai=False, AI-requiring features are hidden entirely."""
     from psydox.core.registry import get_registry
     registry  = get_registry()
     all_feats = registry.all()
+
+    # Filter AI features for non-owners
+    if not show_ai:
+        all_feats = [f for f in all_feats if not f.manifest.requires_ai]
 
     if pinned_ids:
         pinned  = [f for f in all_feats if f.manifest.id in pinned_ids]

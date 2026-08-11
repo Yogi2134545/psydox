@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import streamlit as st
 
+from psydox.access import can_access_ai_studio
 from psydox.dashboard.theme import get_theme_manager
 from psydox.dashboard.preferences import get_preferences
 from psydox.dashboard.widgets import (
@@ -20,8 +21,10 @@ def render_dashboard(
     on_classic:       callable | None = None,
     on_ai_studio:     callable | None = None,
     on_new_project:   callable | None = None,
+    on_batch:         callable | None = None,
 ) -> None:
     """Full Gen-Z dashboard."""
+    is_owner = can_access_ai_studio(user_email)
     prefs = get_preferences(user_email)
     tm    = get_theme_manager()
     tm.inject_css(accent_override=prefs.get("accent", ""))
@@ -60,9 +63,15 @@ def render_dashboard(
             f'👤 {user_name or user_email}</div>',
             unsafe_allow_html=True,
         )
-        if st.button("⚡ Classic Processing", use_container_width=True, key="sb_classic"):
+        if st.button("⚡ Classic Studio", use_container_width=True, key="sb_classic"):
             if on_classic:
                 on_classic()
+        if is_owner:
+            if st.button("✨ AI Studio", use_container_width=True, key="sb_ai_studio"):
+                if on_ai_studio:
+                    on_ai_studio()
+        if on_batch and st.button("📊 Batch Processing", use_container_width=True, key="sb_batch"):
+            on_batch()
         if st.button("Sign Out", key="sb_signout", use_container_width=True):
             st.session_state.logged_in = False
             st.rerun()
@@ -104,7 +113,7 @@ def render_dashboard(
     render_hero(
         user_name=user_name,
         on_classic=on_classic,
-        on_ai_studio=on_ai_studio,
+        on_ai_studio=on_ai_studio if is_owner else None,
     )
 
     st.markdown("<br>", unsafe_allow_html=True)
@@ -122,6 +131,7 @@ def render_dashboard(
             on_select=on_feature_select,
             pinned_ids=prefs.pinned_features(),
             cols=4 if prefs.layout() == "comfortable" else 5,
+            show_ai=is_owner,
         )
         st.markdown("<br>", unsafe_allow_html=True)
 
