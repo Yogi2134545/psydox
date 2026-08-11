@@ -1176,8 +1176,6 @@ def _render_angle_results() -> None:
                     key=f"dl_angle_{out.get('angle_id', name)}",
                 )
             else:
-                reason = out.get("reason") or outcome
-                st.caption(f"No image produced. Reason: {reason}")
                 if outcome == "APPROVED":
                     if st.button(
                         "Set as current image",
@@ -1185,8 +1183,8 @@ def _render_angle_results() -> None:
                     ):
                         _push_history(out["bytes"], label)
                         st.rerun()
-            else:
-                st.caption(f"No image produced. Status: {outcome}")
+                else:
+                    st.caption(f"No image produced. Status: {outcome}")
 
 
 # ── Generic apply button ──────────────────────────────────────────────────────
