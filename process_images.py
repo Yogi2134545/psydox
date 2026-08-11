@@ -792,7 +792,9 @@ def _process_one(args):
         pass
 
     # ── Save ──────────────────────────────────────────────────────────────────
-    out_path = unique_filename(folder, Path(source).stem + ".jpg")
+    # Use a clean numeric filename so URL-derived stems (e.g. "view?usp=drive_link"
+    # from Google Drive) never produce Windows-illegal characters in ZIP entries.
+    out_path = unique_filename(folder, f"{folder.name}_{idx:02d}.jpg")
     del img_copy  # free memory before saving
 
     if not save_image(processed, out_path, cfg["JPEG_QUALITY"]):
