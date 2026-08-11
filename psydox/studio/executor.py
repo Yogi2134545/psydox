@@ -40,6 +40,9 @@ def execute_tool(tool_id: str, inputs: dict, user_email: str) -> dict:
         if tool_id == "ai_model":
             require_owner(user_email)
             return _exec_model_gen(inputs)
+        if tool_id == "ai_angles":
+            require_owner(user_email)
+            return execute_angle_generation(inputs, user_email)
         return {"success": False, "errors": [f"Unknown tool: {tool_id}"], "outputs": [], "metadata": {}}
     except PermissionError as e:
         return {"success": False, "errors": [str(e)], "outputs": [], "metadata": {}}
@@ -149,6 +152,67 @@ def _exec_model_gen(inputs: dict) -> dict:
     clean = {k: v for k, v in inputs.items() if not k.startswith("_")}
     from psydox.features.model_gen.service import ModelGenFeature
     return ModelGenFeature().execute(clean, ctx)
+
+
+def execute_angle_generation(inputs: dict, user_email: str) -> dict:
+    """
+    Multi-angle AI generation via GenerationPipeline.
+    Returns outputs list with one entry per generated angle.
+    """
+    from psydox.generation.pipeline import GenerationPipeline
+
+    image_bytes = inputs.get("image_bytes")
+    if not image_bytes:
+        return {"success": False, "errors": ["No image provided."], "outputs": [], "metadata": {}}
+
+    angle_ids   = inputs.get("angle_ids") or []
+    provider_id = inputs.get("provider_id") or "gemini"
+    product_id  = inputs.get("product_id") or ""
+
+    if not angle_ids:
+        return {"success": False, "errors": ["No angles selected."], "outputs": [], "metadata": {}}
+
+    try:
+        pipeline = GenerationPipeline(user_email=user_email)
+        multi    = pipeline.generate_angles(
+            image_bytes=image_bytes,
+            angle_ids=angle_ids,
+            provider_id=provider_id,
+            product_id=product_id,
+        )
+
+        outputs = []
+        for ar in multi.angle_results:
+            if ar.image_bytes:
+                outputs.append({
+                    "bytes":   ar.image_bytes,
+                    "label":   f"{ar.display_name} — {ar.outcome}",
+                    "mime":    "image/jpeg",
+                    "angle_id": ar.angle_id,
+                    "outcome": ar.outcome,
+                    "quality_score": ar.quality_score,
+                    "fidelity_score": ar.fidelity_score,
+                    "cost_inr": ar.cost_inr,
+                    "attempts": ar.attempts,
+                })
+
+        errors = [
+            f"{ar.display_name}: {ar.reason}"
+            for ar in multi.angle_results
+            if ar.outcome in ("HARD_FAIL", "FAILED", "BUDGET_CONFLICT")
+        ]
+
+        return {
+            "success":  multi.approved > 0 or multi.review > 0,
+            "outputs":  outputs,
+            "errors":   errors,
+            "metadata": multi.to_dict(),
+        }
+    except PermissionError as e:
+        return {"success": False, "errors": [str(e)], "outputs": [], "metadata": {}}
+    except Exception as e:
+        _log.exception("execute_angle_generation failed: %s", e)
+        return {"success": False, "errors": [str(e)], "outputs": [], "metadata": {}}
 
 
 def _build_context(inputs: dict) -> dict:

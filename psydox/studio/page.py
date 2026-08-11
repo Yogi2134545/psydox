@@ -94,6 +94,7 @@ _AI_TOOLS = [
     ("ai_lifestyle",  "🌴", "AI Lifestyle",  True),
     ("ai_model",      "👤", "AI Model",      True),
     ("ai_scene",      "🏠", "AI Scene",      True),
+    ("ai_angles",     "🎯", "AI Angles",     True),
 ]
 
 # ── State helpers ─────────────────────────────────────────────────────────────
@@ -513,6 +514,7 @@ def _render_properties(user_email: str, is_owner_user: bool) -> None:
         "ai_lifestyle":  _props_ai_lifestyle,
         "ai_model":      _props_ai_model,
         "ai_scene":      _props_ai_scene,
+        "ai_angles":     _props_ai_angles,
     }
     fn = dispatch.get(tool)
     if fn:
@@ -804,6 +806,131 @@ def _props_ai_scene(cur: bytes, user_email: str) -> None:
     }
     _apply_button("ai_scene", cur, "🏠 Generate Scene", inputs=inputs,
                   user_email=user_email, is_ai=True)
+
+
+def _props_ai_angles(cur: bytes, user_email: str) -> None:
+    """Multi-angle product generation panel (owner only)."""
+    from psydox.generation.contract import list_angles
+
+    provider_id = _render_provider_selector()
+
+    st.markdown('<div class="psx-props-header">SELECT ANGLES</div>', unsafe_allow_html=True)
+
+    all_angles = list_angles()
+    angle_labels = {a.angle_id: f"{a.display_name}" for a in all_angles}
+
+    # Default: all 8 angles selected
+    default_selected = [a.angle_id for a in all_angles]
+    selected_ids = st.multiselect(
+        "Angles to generate",
+        options=list(angle_labels.keys()),
+        default=default_selected,
+        format_func=lambda x: angle_labels.get(x, x),
+        key="ai_angles_sel",
+    )
+
+    if selected_ids:
+        budget = len(selected_ids) * 0.50
+        st.caption(f"Estimated max budget: ₹{budget:.2f} ({len(selected_ids)} angles × ₹0.50)")
+
+    if not selected_ids:
+        st.warning("Select at least one angle.")
+        return
+
+    if not st.button(
+        f"🎯 Generate {len(selected_ids)} Angle(s)",
+        use_container_width=True, type="primary", key="apply_ai_angles",
+    ):
+        # Show previous results if they exist
+        _render_angle_results()
+        return
+
+    with st.spinner(f"Generating {len(selected_ids)} product angle(s)…"):
+        from psydox.studio.executor import execute_angle_generation
+        result = execute_angle_generation(
+            inputs={
+                "image_bytes": cur,
+                "angle_ids":   selected_ids,
+                "provider_id": provider_id or "gemini",
+            },
+            user_email=user_email,
+        )
+
+    st.session_state["ai_angles_last_result"] = result
+
+    if result.get("success") and result.get("outputs"):
+        meta = result.get("metadata", {})
+        approved = meta.get("approved", 0)
+        total    = meta.get("requested", len(selected_ids))
+        cost     = meta.get("total_cost_inr", 0.0)
+        cpa      = meta.get("cost_per_approved", 0.0)
+        st.success(
+            f"Generated {approved}/{total} angles approved. "
+            f"Total cost: ₹{cost:.3f} | ₹{cpa:.3f}/approved angle"
+        )
+        # Push first approved image to main canvas
+        first_approved = next(
+            (o for o in result["outputs"] if o.get("outcome") == "APPROVED"), None
+        )
+        if first_approved:
+            _push_history(first_approved["bytes"], f"AI Angles — {first_approved['label']}")
+    elif result.get("errors"):
+        for err in result["errors"]:
+            st.error(err)
+    else:
+        st.warning("No angles generated. Check provider configuration.")
+
+    _render_angle_results()
+    st.rerun()
+
+
+def _render_angle_results() -> None:
+    """Display angle results from the last generation run."""
+    result = st.session_state.get("ai_angles_last_result")
+    if not result or not result.get("outputs"):
+        return
+
+    st.markdown("---")
+    st.markdown('<div class="psx-props-header">ANGLE RESULTS</div>', unsafe_allow_html=True)
+
+    _OUTCOME_STYLE = {
+        "APPROVED":       ("✅", "#22c55e"),
+        "REVIEW":         ("👁️", "#f59e0b"),
+        "HARD_FAIL":      ("❌", "#ef4444"),
+        "FAILED":         ("❌", "#ef4444"),
+        "BUDGET_CONFLICT": ("🚫", "#94a3b8"),
+    }
+
+    for out in result["outputs"]:
+        outcome = out.get("outcome", "UNKNOWN")
+        icon, color = _OUTCOME_STYLE.get(outcome, ("?", "#888"))
+        label = out.get("label", "")
+        cost  = out.get("cost_inr", 0.0)
+        qual  = out.get("quality_score", 0)
+        fid   = out.get("fidelity_score", 0.0)
+
+        with st.expander(f"{icon} {label}", expanded=(outcome == "APPROVED")):
+            if out.get("bytes"):
+                st.image(out["bytes"], use_container_width=True)
+                st.caption(
+                    f"Quality: {qual}/100  |  Fidelity: {fid:.0%}  |  Cost: ₹{cost:.3f}"
+                )
+                st.download_button(
+                    f"⬇ Download {label.split('—')[0].strip()}",
+                    data=out["bytes"],
+                    file_name=f"{out.get('angle_id', 'angle').lower()}_output.jpg",
+                    mime="image/jpeg",
+                    key=f"dl_angle_{out.get('angle_id', label)}",
+                )
+                if outcome == "APPROVED":
+                    if st.button(
+                        "Set as current image",
+                        key=f"set_current_{out.get('angle_id', label)}",
+                    ):
+                        _push_history(out["bytes"], label)
+                        st.rerun()
+            else:
+                st.caption(f"No image produced. Status: {outcome}")
 
 
 # ── Generic apply button ──────────────────────────────────────────────────────
