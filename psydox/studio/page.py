@@ -310,21 +310,27 @@ def render_studio(
 # ── Upload zone ───────────────────────────────────────────────────────────────
 
 def _render_upload_zone(is_owner_user: bool) -> None:
-    st.markdown(
-        '<div class="psx-upload-zone">'
-        '<div class="icon">📸</div>'
-        '<h3>Drop your product image here</h3>'
-        '<p>JPEG, PNG, WebP supported</p>'
-        '</div>',
-        unsafe_allow_html=True,
-    )
-    uploaded = st.file_uploader(
-        "Upload image", type=["jpg", "jpeg", "png", "webp"],
-        label_visibility="collapsed", key="studio_uploader",
-    )
-    if uploaded:
-        _do_upload(uploaded)
-        st.rerun()
+    tab_img, tab_excel = st.tabs(["📸 Single Image", "📊 Excel Batch Import"])
+
+    with tab_img:
+        st.markdown(
+            '<div class="psx-upload-zone">'
+            '<div class="icon">📸</div>'
+            '<h3>Drop your product image here</h3>'
+            '<p>JPEG, PNG, WebP supported</p>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        uploaded = st.file_uploader(
+            "Upload image", type=["jpg", "jpeg", "png", "webp"],
+            label_visibility="collapsed", key="studio_uploader",
+        )
+        if uploaded:
+            _do_upload(uploaded)
+            st.rerun()
+
+    with tab_excel:
+        _render_excel_import()
 
 
 def _do_upload(uploaded_file) -> None:
@@ -341,6 +347,126 @@ def _do_upload(uploaded_file) -> None:
     st.session_state.studio_history      = [{"bytes": raw, "label": "Original"}]
     st.session_state.studio_history_idx  = 0
     st.session_state.studio_project_name = uploaded_file.name.rsplit(".", 1)[0].replace("_", " ").title()
+
+
+def _render_excel_import() -> None:
+    """
+    Excel batch import panel.
+
+    Excel format:
+      Column 1:  STYLE_CODE  (product identifier)
+      Column 2+: Image URLs  (up to 12 columns of image links)
+
+    The user uploads the file → sees a list of style codes → picks one
+    → the first image URL is downloaded and loaded into the Studio.
+    """
+    st.markdown(
+        '<div class="psx-props-header">EXCEL CATALOG IMPORT</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Column 1 = Style Code, Columns 2–13 = Image URLs. "
+        "Supports Google Drive, Dropbox, OneDrive, and direct links."
+    )
+
+    excel_file = st.file_uploader(
+        "Upload Excel catalog",
+        type=["xlsx", "xls"],
+        key="studio_excel_uploader",
+        label_visibility="collapsed",
+    )
+
+    if excel_file:
+        st.session_state["studio_excel_data"] = excel_file.getvalue()
+        st.session_state.pop("studio_excel_selected", None)
+
+    excel_data: bytes | None = st.session_state.get("studio_excel_data")
+    if not excel_data:
+        st.info("Upload an Excel file to import product images from a catalog.")
+        return
+
+    # Parse
+    try:
+        from psydox.batch.excel_reader import read_excel_bytes
+    except ImportError:
+        st.error("Excel reader not available — check psydox/batch/excel_reader.py.")
+        return
+
+    result = read_excel_bytes(excel_data)
+
+    if result.errors:
+        for err in result.errors:
+            st.error(err)
+        return
+
+    for warn in result.warnings:
+        st.warning(warn)
+
+    st.success(
+        f"Loaded **{result.total_styles}** style codes with "
+        f"**{result.total_urls}** image URLs."
+    )
+
+    # Style selector
+    style_codes = sorted(result.styles.keys())
+    selected_code = st.selectbox(
+        "Select style code to open in Studio",
+        options=style_codes,
+        key="studio_excel_code_sel",
+    )
+
+    if not selected_code:
+        return
+
+    urls = result.styles[selected_code]
+    st.caption(f"{len(urls)} image URL(s) for **{selected_code}**")
+
+    # URL picker
+    if len(urls) == 1:
+        chosen_url = urls[0]
+        st.caption(f"URL: {chosen_url[:80]}{'…' if len(chosen_url) > 80 else ''}")
+    else:
+        chosen_url = st.selectbox(
+            "Image URL",
+            options=urls,
+            format_func=lambda u: u[:90] + ("…" if len(u) > 90 else ""),
+            key="studio_excel_url_sel",
+        )
+
+    if st.button(
+        f"Load '{selected_code}' into Studio",
+        use_container_width=True,
+        type="primary",
+        key="studio_excel_load_btn",
+    ):
+        with st.spinner(f"Downloading image for {selected_code}…"):
+            from psydox.batch.excel_reader import download_image
+            img_bytes = download_image(chosen_url)
+
+        if not img_bytes:
+            st.error(
+                f"Could not download the image for **{selected_code}**. "
+                "Check that the URL is public and accessible."
+            )
+            return
+
+        # Validate with the same security check as a manual upload
+        try:
+            from psydox.security.upload import validate_upload
+            validation = validate_upload(img_bytes, f"{selected_code}.jpg")
+            if not validation.valid:
+                for e in validation.errors:
+                    st.error(e)
+                return
+            for w in validation.warnings:
+                st.warning(w)
+        except Exception:
+            pass  # skip validation if security module unavailable
+
+        st.session_state.studio_history     = [{"bytes": img_bytes, "label": f"Original ({selected_code})"}]
+        st.session_state.studio_history_idx = 0
+        st.session_state.studio_project_name = selected_code
+        st.rerun()
 
 
 # ── Toolbar ───────────────────────────────────────────────────────────────────
