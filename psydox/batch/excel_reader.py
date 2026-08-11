@@ -117,8 +117,13 @@ def _looks_like_header(row: tuple) -> bool:
         return False
     first = str(row[0]).strip().lower()
     return first in (
+        # underscore variants
         "style_code", "stylecode", "code", "sku", "style", "product_code",
-        "productcode", "image", "images", "url", "urls",
+        "productcode", "item_code", "itemcode", "article_no", "article_number",
+        "image", "images", "url", "urls",
+        # space variants (e.g. "Style Code", "Product Code")
+        "style code", "product code", "item code", "article no", "article number",
+        "product id", "product_id", "item id", "item_id",
     )
 
 
