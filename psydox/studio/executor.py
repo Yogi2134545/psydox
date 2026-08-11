@@ -150,6 +150,8 @@ def _exec_lifestyle(inputs: dict) -> dict:
 def _exec_model_gen(inputs: dict) -> dict:
     ctx   = _build_context(inputs)
     clean = {k: v for k, v in inputs.items() if not k.startswith("_")}
+    if inputs.get("_ratio_wh"):
+        ctx["ratio_wh"] = inputs["_ratio_wh"]
     from psydox.features.model_gen.service import ModelGenFeature
 
     angles = clean.pop("angles", None) or ["Front"]

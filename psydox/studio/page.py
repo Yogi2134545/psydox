@@ -949,7 +949,9 @@ def _props_ai_lifestyle(cur: bytes, user_email: str) -> None:
 
 _MODEL_ANGLES = ["Front", "Back", "¾ Left", "¾ Right", "Left Side", "Right Side"]
 
+
 def _props_ai_model(cur: bytes, user_email: str) -> None:
+    from psydox.batch.processor import RATIO_PRESETS
     provider_id = _render_provider_selector()
     gender    = st.selectbox("Gender", ["Female", "Male", "Non-binary"], key="mod_gender")
     age_group = st.selectbox("Age group", ["18-25", "25-35", "35-45", "45+"], key="mod_age")
@@ -964,6 +966,15 @@ def _props_ai_model(cur: bytes, user_email: str) -> None:
     product_desc = st.text_input("Product description", placeholder="e.g. Navy hoodie",
                                   key="mod_prod")
 
+    st.markdown('<div class="psx-props-header">OUTPUT SIZE</div>', unsafe_allow_html=True)
+    ratio_label = st.selectbox("Ratio / Size", list(RATIO_PRESETS.keys()), key="mod_ratio")
+    ratio_dims  = RATIO_PRESETS[ratio_label]
+    if ratio_dims is None:
+        _rc1, _rc2 = st.columns(2)
+        _rw = _rc1.number_input("Width px",  64, 4096, 1080, key="mod_ratio_w")
+        _rh = _rc2.number_input("Height px", 64, 4096, 1350, key="mod_ratio_h")
+        ratio_dims = (int(_rw), int(_rh))
+
     st.markdown('<div class="psx-props-header">ANGLES</div>', unsafe_allow_html=True)
     selected_angles = st.multiselect(
         "Select angles to generate",
@@ -974,9 +985,17 @@ def _props_ai_model(cur: bytes, user_email: str) -> None:
 
     if not selected_angles:
         st.info("Select at least one angle.")
+        _render_model_results()
         return
 
     n = len(selected_angles)
+    if not st.button(
+        f"Apply — 👤 Generate {n} Model Shot{'s' if n > 1 else ''}",
+        use_container_width=True, type="primary", key="apply_ai_model",
+    ):
+        _render_model_results()
+        return
+
     inputs = {
         "image_bytes":  cur,
         "gender":       gender,
@@ -986,10 +1005,62 @@ def _props_ai_model(cur: bytes, user_email: str) -> None:
         "product_desc": product_desc,
         "angles":       selected_angles,
         "_provider_id": provider_id,
+        "_ratio_wh":    ratio_dims,
     }
-    btn_label = f"👤 Generate {n} Model Shot{'s' if n > 1 else ''}"
-    _apply_button("ai_model", cur, btn_label, inputs=inputs,
-                  user_email=user_email, is_ai=True)
+
+    with st.spinner(f"Generating {n} model shot(s)…"):
+        result = _execute_tool("ai_model", inputs, user_email)
+
+    st.session_state["ai_model_last_result"] = result
+
+    if result and result.get("success") and result.get("outputs"):
+        meta      = result.get("metadata", {})
+        generated = meta.get("generated", len(result["outputs"]))
+        total     = meta.get("total", n)
+        st.success(f"Generated {generated}/{total} model shot(s).")
+        _push_history(result["outputs"][0]["bytes"],
+                      f"AI Model — {selected_angles[0]}")
+    elif result:
+        for err in result.get("errors", ["Unknown error"]):
+            st.error(err)
+
+    _render_model_results()
+    st.rerun()
+
+
+def _render_model_results() -> None:
+    """Display all model shots from the last generation run."""
+    result = st.session_state.get("ai_model_last_result")
+    if not result or not result.get("outputs"):
+        return
+
+    outputs = result["outputs"]
+    st.markdown("---")
+    st.markdown(
+        f'<div class="psx-props-header">RESULTS — {len(outputs)} shot(s)</div>',
+        unsafe_allow_html=True,
+    )
+
+    for i, out in enumerate(outputs):
+        lbl   = out.get("label", f"Shot {i + 1}")
+        angle = lbl.split("·")[-1].strip() if "·" in lbl else lbl
+        with st.expander(f"👤 {angle}", expanded=(i == 0)):
+            if out.get("bytes"):
+                st.image(out["bytes"], use_container_width=True)
+                safe = angle.lower().replace(" ", "_").replace("¾", "34").replace("/", "")
+                st.download_button(
+                    f"⬇ Download {angle}",
+                    data=out["bytes"],
+                    file_name=f"model_{safe}.jpg",
+                    mime="image/jpeg",
+                    key=f"dl_model_{i}",
+                )
+                if st.button("Set as current image", key=f"set_model_{i}",
+                             use_container_width=True):
+                    _push_history(out["bytes"], f"AI Model — {angle}")
+                    st.rerun()
+            else:
+                st.caption("No image produced.")
 
 
 def _props_ai_scene(cur: bytes, user_email: str) -> None:
