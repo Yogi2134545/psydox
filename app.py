@@ -1,8 +1,16 @@
 """Psydox — Nike Image Processor"""
+import logging
 import streamlit as st
 import yaml, bcrypt, zipfile, json, tempfile, threading, gc, shutil, hashlib
 from pathlib import Path
 from math import gcd
+
+PSYDOX_VERSION = "2.0.0"
+PSYDOX_BUILD   = "7b406dc"
+
+_log = logging.getLogger("psydox.app")
+logging.basicConfig(level=logging.INFO)
+_log.info("Psydox %s build %s starting up", PSYDOX_VERSION, PSYDOX_BUILD)
 
 try:
     from nano_banana.ui import render_nano_banana as _render_nano_banana
@@ -14,14 +22,16 @@ except ImportError:
 try:
     from psydox.storage.database import init_db
     init_db()
-except Exception:
-    pass
+    _log.info("Database initialised")
+except Exception as _e:
+    _log.warning("init_db failed: %s", _e)
 
 try:
     from psydox.features.loader import bootstrap_features
     bootstrap_features()
-except Exception:
-    pass
+    _log.info("Features bootstrapped")
+except Exception as _e:
+    _log.warning("bootstrap_features failed: %s", _e)
 
 st.set_page_config(page_title="Psydox", page_icon="⚡", layout="wide",
                    initial_sidebar_state="expanded")
@@ -206,7 +216,7 @@ def _worker(job_id, cfg, out_dir):
 #  NAV MODE
 # ═════════════════════════════════════════════════════════════════════════════
 if "psydox_nav" not in st.session_state:
-    st.session_state.psydox_nav = "classic"
+    st.session_state.psydox_nav = "dashboard"
 
 # ─── Dashboard view ──────────────────────────────────────────────────────────
 if st.session_state.psydox_nav == "dashboard":
