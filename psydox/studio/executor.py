@@ -51,8 +51,10 @@ def execute_tool(tool_id: str, inputs: dict, user_email: str) -> dict:
 # ── Backend connectors ────────────────────────────────────────────────────────
 
 def _exec_background(inputs: dict) -> dict:
+    ctx   = _build_context(inputs)
+    clean = {k: v for k, v in inputs.items() if not k.startswith("_")}
     from psydox.features.background.service import BackgroundFeature
-    return BackgroundFeature().execute(inputs, {})
+    return BackgroundFeature().execute(clean, ctx)
 
 
 def _exec_classic(inputs: dict) -> dict:
@@ -136,10 +138,30 @@ def exec_enhance(image_bytes: bytes, brightness: float = 1.0, contrast: float = 
 
 
 def _exec_lifestyle(inputs: dict) -> dict:
+    ctx = _build_context(inputs)
+    clean = {k: v for k, v in inputs.items() if not k.startswith("_")}
     from psydox.features.lifestyle.service import LifestyleFeature
-    return LifestyleFeature().execute(inputs, {})
+    return LifestyleFeature().execute(clean, ctx)
 
 
 def _exec_model_gen(inputs: dict) -> dict:
+    ctx = _build_context(inputs)
+    clean = {k: v for k, v in inputs.items() if not k.startswith("_")}
     from psydox.features.model_gen.service import ModelGenFeature
-    return ModelGenFeature().execute(inputs, {})
+    return ModelGenFeature().execute(clean, ctx)
+
+
+def _build_context(inputs: dict) -> dict:
+    """Extract and validate provider selection from inputs, return orchestrator context."""
+    provider_id = inputs.get("_provider_id")
+    ctx: dict = {}
+    if provider_id:
+        try:
+            from psydox.ai_core.provider_registry import get_provider_registry
+            registry = get_provider_registry()
+            router   = registry.build_router(preferred_id=provider_id)
+            ctx["router"] = router
+            ctx["provider_id"] = provider_id
+        except Exception as e:
+            _log.warning("Could not build router for provider '%s': %s", provider_id, e)
+    return ctx

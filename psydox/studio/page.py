@@ -24,6 +24,58 @@ from PIL import Image
 from psydox.access import can_access_ai_studio, require_owner
 from psydox.studio.executor import execute_tool, exec_enhance
 
+
+def _render_provider_selector() -> str | None:
+    """Show provider status + selector. Returns the selected provider id or None."""
+    try:
+        from psydox.ai_core.provider_registry import get_provider_registry
+        registry = get_provider_registry()
+        infos    = registry.list()
+
+        # Build status display
+        status_lines = []
+        for info in infos:
+            dot = "●" if info.status.value == "configured" else "○"
+            color = info.status_color
+            status_lines.append(
+                f'<span style="color:{color};font-size:11px;">'
+                f'{info.icon} {info.display_name} — {info.status_label}</span>'
+            )
+        st.markdown(
+            '<div class="psx-props-header">AI PROVIDER</div>'
+            + "<br>".join(status_lines),
+            unsafe_allow_html=True,
+        )
+
+        configured = [i for i in infos if i.status.value == "configured"]
+        if not configured:
+            st.warning("No AI provider configured. Ask the admin to set an API key in Railway environment variables.")
+            return None
+
+        options      = [i.id for i in configured]
+        labels       = {i.id: f"{i.icon} {i.display_name}" for i in configured}
+        current      = st.session_state.get("studio_provider", options[0])
+        if current not in options:
+            current = options[0]
+
+        selected = st.selectbox(
+            "Provider", options, index=options.index(current),
+            format_func=lambda x: labels.get(x, x),
+            key="studio_provider_sel",
+        )
+        st.session_state["studio_provider"] = selected
+
+        # Show model for selected provider
+        sel_info = next((i for i in infos if i.id == selected), None)
+        if sel_info:
+            st.caption(f"Model: {sel_info.default_model}")
+
+        st.markdown("---")
+        return selected
+    except Exception as e:
+        st.caption(f"Provider status unavailable: {e}")
+        return None
+
 _log = logging.getLogger("psydox.studio")
 
 # ── Tool definitions ──────────────────────────────────────────────────────────
@@ -641,6 +693,7 @@ def _props_marketplace(cur: bytes, user_email: str) -> None:
 # ═════════════════════════════════════════════════════════════════════════════
 
 def _props_ai_background(cur: bytes, user_email: str) -> None:
+    provider_id = _render_provider_selector()
     from psydox.features.background.service import AI_BG_TYPES
     ai_type = st.selectbox("Scene type", AI_BG_TYPES, key="ai_bg_type")
     custom_prompt = ""
@@ -653,9 +706,10 @@ def _props_ai_background(cur: bytes, user_email: str) -> None:
         custom_prompt = st.text_input("Additional details (optional)", key="ai_bg_extra")
 
     inputs = {
-        "image_bytes": cur,
-        "bg_type":     ai_type.lower().replace(" ", "_"),
-        "ai_prompt":   custom_prompt,
+        "image_bytes":   cur,
+        "bg_type":       ai_type.lower().replace(" ", "_"),
+        "ai_prompt":     custom_prompt,
+        "_provider_id":  provider_id,
     }
     _apply_button("ai_background", cur, "🤖 Generate Background", inputs=inputs,
                   user_email=user_email, is_ai=True)
@@ -672,6 +726,7 @@ def _ai_bg_description(ai_type: str) -> str:
 
 
 def _props_ai_lifestyle(cur: bytes, user_email: str) -> None:
+    provider_id = _render_provider_selector()
     styles = [
         "Casual Street Style", "Home Kitchen", "Office Desk",
         "Gym / Fitness", "Café / Coffee Shop", "Luxury Interior",
@@ -688,12 +743,14 @@ def _props_ai_lifestyle(cur: bytes, user_email: str) -> None:
         "style":         style,
         "product_desc":  product_desc,
         "custom_prompt": custom,
+        "_provider_id":  provider_id,
     }
     _apply_button("ai_lifestyle", cur, "🌴 Generate Lifestyle", inputs=inputs,
                   user_email=user_email, is_ai=True)
 
 
 def _props_ai_model(cur: bytes, user_email: str) -> None:
+    provider_id = _render_provider_selector()
     gender    = st.selectbox("Gender", ["Female", "Male", "Non-binary"], key="mod_gender")
     age_group = st.selectbox("Age group", ["18-25", "25-35", "35-45", "45+"], key="mod_age")
     ethnicity = st.selectbox("Ethnicity", [
@@ -714,6 +771,7 @@ def _props_ai_model(cur: bytes, user_email: str) -> None:
         "ethnicity":    ethnicity,
         "style":        style,
         "product_desc": product_desc,
+        "_provider_id": provider_id,
     }
     _apply_button("ai_model", cur, "👤 Generate Model Shot", inputs=inputs,
                   user_email=user_email, is_ai=True)
@@ -721,6 +779,7 @@ def _props_ai_model(cur: bytes, user_email: str) -> None:
 
 def _props_ai_scene(cur: bytes, user_email: str) -> None:
     """AI Scene uses BackgroundFeature with an outdoor/studio prompt."""
+    provider_id = _render_provider_selector()
     scene_type = st.selectbox("Scene environment", [
         "Luxury Interior", "Modern Kitchen", "Rooftop Urban",
         "Forest / Nature", "Desert / Minimalist", "Café Setting",
@@ -738,9 +797,10 @@ def _props_ai_scene(cur: bytes, user_email: str) -> None:
         prompt += f", {extra}"
 
     inputs = {
-        "image_bytes": cur,
-        "bg_type":     "custom_ai",
-        "ai_prompt":   prompt,
+        "image_bytes":   cur,
+        "bg_type":       "custom_ai",
+        "ai_prompt":     prompt,
+        "_provider_id":  provider_id,
     }
     _apply_button("ai_scene", cur, "🏠 Generate Scene", inputs=inputs,
                   user_email=user_email, is_ai=True)
