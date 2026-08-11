@@ -46,14 +46,15 @@ def render_hero(user_name: str = "", on_classic=None, on_ai_studio=None) -> None
         unsafe_allow_html=True,
     )
 
-    c1, c2, c3 = st.columns([1, 1, 4])
+    cols = [1, 4] if not on_ai_studio else [1, 1, 4]
+    c1, *rest = st.columns(cols)
     with c1:
         if st.button("⚡ CLASSIC", use_container_width=True, help="Fast catalog processing"):
             if on_classic:
                 on_classic()
-    with c2:
-        if st.button("✨ AI STUDIO", use_container_width=True, help="Create premium AI product content"):
-            if on_ai_studio:
+    if on_ai_studio:
+        with rest[0]:
+            if st.button("✨ AI STUDIO", use_container_width=True, help="Create premium AI product content"):
                 on_ai_studio()
 
 
