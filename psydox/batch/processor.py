@@ -162,29 +162,46 @@ def convert_image(img: Image.Image, cfg: BatchConfig) -> Image.Image:
     else:
         original_bg = (235, 235, 235)
 
-    # Background replacement
+    # Background handling — mirrors process_images.convert_to_4_5:
+    #   tuple (R,G,B) → replace bg, then letterbox with that colour
+    #   "auto"        → FILL/CROP: no artificial strips, preserves original look
+    #   anything else → letterbox with detected original edge colour
     if isinstance(cfg.bg_rgb, (list, tuple)) and len(cfg.bg_rgb) == 3:
         bg_fill = tuple(int(c) for c in cfg.bg_rgb)
         img = _replace_mixed_background(img, bg_fill)
+
+        orig_w, orig_h = img.size
+        scale = min(TW / orig_w, TH / orig_h, 2.0)
+        nw    = max(1, int(orig_w * scale))
+        nh    = max(1, int(orig_h * scale))
+        scaled = img.resize((nw, nh), Image.LANCZOS)
+        px = (TW - nw) // 2
+        py = (TH - nh) // 2
+        canvas_arr = np.full((TH, TW, 3), bg_fill, dtype=np.uint8)
+        canvas_arr[py:py + nh, px:px + nw] = np.array(scaled, dtype=np.uint8)
+        return Image.fromarray(canvas_arr)
+
+    elif cfg.bg_rgb == "auto":
+        orig_w, orig_h = img.size
+        scale = max(TW / orig_w, TH / orig_h)
+        nw    = max(TW, int(orig_w * scale))
+        nh    = max(TH, int(orig_h * scale))
+        scaled = img.resize((nw, nh), Image.LANCZOS)
+        left = (nw - TW) // 2
+        top  = (nh - TH) // 2
+        return scaled.crop((left, top, left + TW, top + TH))
+
     else:
-        bg_fill = original_bg
-
-    orig_w, orig_h = img.size
-
-    # Scale to fit (letterbox / pillarbox — no cropping)
-    scale = min(TW / orig_w, TH / orig_h, 2.0)
-    nw    = max(1, int(orig_w * scale))
-    nh    = max(1, int(orig_h * scale))
-    scaled = img.resize((nw, nh), Image.LANCZOS)
-
-    # Centre on canvas
-    px = (TW - nw) // 2
-    py = (TH - nh) // 2
-
-    canvas_arr = np.full((TH, TW, 3), bg_fill, dtype=np.uint8)
-    canvas_arr[py:py + nh, px:px + nw] = np.array(scaled, dtype=np.uint8)
-
-    return Image.fromarray(canvas_arr)
+        orig_w, orig_h = img.size
+        scale = min(TW / orig_w, TH / orig_h, 2.0)
+        nw    = max(1, int(orig_w * scale))
+        nh    = max(1, int(orig_h * scale))
+        scaled = img.resize((nw, nh), Image.LANCZOS)
+        px = (TW - nw) // 2
+        py = (TH - nh) // 2
+        canvas_arr = np.full((TH, TW, 3), original_bg, dtype=np.uint8)
+        canvas_arr[py:py + nh, px:px + nw] = np.array(scaled, dtype=np.uint8)
+        return Image.fromarray(canvas_arr)
 
 
 def image_bytes_to_jpeg(img: Image.Image, quality: int) -> bytes:
