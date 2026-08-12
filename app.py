@@ -18,6 +18,10 @@ try:
 except ImportError:
     _NB_AVAILABLE = False
 
+st.set_page_config(page_title="Psydox", page_icon="⚡", layout="wide",
+                   initial_sidebar_state="expanded")
+
+
 @st.cache_resource
 def _bootstrap() -> None:
     try:
@@ -34,9 +38,6 @@ def _bootstrap() -> None:
         _log.warning("bootstrap_features failed: %s", _e)
 
 _bootstrap()
-
-st.set_page_config(page_title="Psydox", page_icon="⚡", layout="wide",
-                   initial_sidebar_state="expanded")
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent))
