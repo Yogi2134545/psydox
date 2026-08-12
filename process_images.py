@@ -603,48 +603,30 @@ def convert_to_4_5(img: Image.Image, cfg: dict) -> Image.Image:
 
     # Background handling:
     #   tuple (R,G,B) → replace mixed bg, then letterbox with that colour
-    #   "auto"        → FILL/CROP: scale to cover, centre-crop — no artificial strips
-    #   anything else → letterbox with detected original edge colour (legacy path)
+    #   "auto" / else → FIT/letterbox: scale to fit, extend background to fill canvas.
+    #                   Uses the detected original edge colour so strips blend with the
+    #                   original background (invisible on solid-bg images).
     _bgr = cfg.get("BG_RGB")
     if isinstance(_bgr, (list, tuple)) and len(_bgr) == 3:
         bg_fill = tuple(int(c) for c in _bgr)
         img = replace_mixed_background(img, cfg)
-
-        orig_w, orig_h = img.size
-        scale = min(TW / orig_w, TH / orig_h, 2.0)
-        nw = max(1, int(orig_w * scale))
-        nh = max(1, int(orig_h * scale))
-        scaled = img.resize((nw, nh), Image.LANCZOS)
-        px = (TW - nw) // 2
-        py = (TH - nh) // 2
-        canvas_arr = np.full((TH, TW, 3), bg_fill, dtype=np.uint8)
-        canvas_arr[py:py+nh, px:px+nw] = np.array(scaled, dtype=np.uint8)
-        return Image.fromarray(canvas_arr)
-
-    elif _bgr == "auto":
-        # Auto (keep original): FILL/CROP so the output looks like the input.
-        # Scale to cover the full canvas, then centre-crop — no solid-colour strips.
-        orig_w, orig_h = img.size
-        scale = max(TW / orig_w, TH / orig_h)
-        nw = max(TW, int(orig_w * scale))
-        nh = max(TH, int(orig_h * scale))
-        scaled = img.resize((nw, nh), Image.LANCZOS)
-        left = (nw - TW) // 2
-        top  = (nh - TH) // 2
-        return scaled.crop((left, top, left + TW, top + TH))
-
     else:
-        # Legacy BG_GREY path: letterbox with detected original edge colour.
-        orig_w, orig_h = img.size
-        scale = min(TW / orig_w, TH / orig_h, 2.0)
-        nw = max(1, int(orig_w * scale))
-        nh = max(1, int(orig_h * scale))
-        scaled = img.resize((nw, nh), Image.LANCZOS)
-        px = (TW - nw) // 2
-        py = (TH - nh) // 2
-        canvas_arr = np.full((TH, TW, 3), original_bg, dtype=np.uint8)
-        canvas_arr[py:py+nh, px:px+nw] = np.array(scaled, dtype=np.uint8)
-        return Image.fromarray(canvas_arr)
+        bg_fill = original_bg
+
+    orig_w, orig_h = img.size
+
+    scale = min(TW / orig_w, TH / orig_h, 2.0)
+    nw = max(1, int(orig_w * scale))
+    nh = max(1, int(orig_h * scale))
+    scaled = img.resize((nw, nh), Image.LANCZOS)
+
+    px = (TW - nw) // 2
+    py = (TH - nh) // 2
+
+    canvas_arr = np.full((TH, TW, 3), bg_fill, dtype=np.uint8)
+    canvas_arr[py:py+nh, px:px+nw] = np.array(scaled, dtype=np.uint8)
+
+    return Image.fromarray(canvas_arr)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
