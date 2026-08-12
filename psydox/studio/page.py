@@ -25,6 +25,23 @@ from psydox.access import can_access_ai_studio, require_owner
 from psydox.studio.executor import execute_tool, exec_enhance
 
 
+@st.cache_data(show_spinner=False, max_entries=50)
+def _image_wh(image_bytes: bytes) -> tuple:
+    return Image.open(io.BytesIO(image_bytes)).size
+
+
+@st.cache_data(show_spinner=False, max_entries=50)
+def _cached_quality_score(image_bytes: bytes):
+    from psydox.quality.engine import AIQualityEngine
+    return AIQualityEngine().score(image_bytes)
+
+
+@st.cache_data(show_spinner=False, max_entries=5)
+def _cached_read_excel(excel_bytes: bytes):
+    from psydox.batch.excel_reader import read_excel_bytes
+    return read_excel_bytes(excel_bytes)
+
+
 def _render_provider_selector() -> str | None:
     """Show provider status + selector. Returns the selected provider id or None."""
     try:
@@ -388,7 +405,7 @@ def _render_excel_import() -> None:
         st.info("Upload an Excel file to import product images from a catalog.")
         return
 
-    read_result = read_excel_bytes(excel_data)
+    read_result = _cached_read_excel(excel_data)
     if read_result.errors:
         for err in read_result.errors:
             st.error(err)
@@ -615,9 +632,7 @@ def _render_canvas(is_owner_user: bool) -> None:
 
     # Quality badge
     try:
-        from psydox.quality.engine import AIQualityEngine
-        qe = AIQualityEngine()
-        qs = qe.score(cur)
+        qs = _cached_quality_score(cur)
         verdict_color = {"APPROVED": "#22c55e", "REVIEW": "#f59e0b", "NEEDS_FIX": "#ef4444"}.get(
             qs.verdict.value, "#888"
         )
@@ -755,8 +770,7 @@ def _props_background(cur: bytes, user_email: str) -> None:
 def _props_resize(cur: bytes, user_email: str) -> None:
     from psydox.batch.processor import RATIO_PRESETS
 
-    img = Image.open(io.BytesIO(cur))
-    ow, oh = img.size
+    ow, oh = _image_wh(cur)
     st.caption(f"Original: {ow} × {oh} px")
 
     # Ratio preset selector
@@ -787,8 +801,7 @@ def _props_resize(cur: bytes, user_email: str) -> None:
 
 
 def _props_crop(cur: bytes, user_email: str) -> None:
-    img = Image.open(io.BytesIO(cur))
-    ow, oh = img.size
+    ow, oh = _image_wh(cur)
     st.caption(f"Original: {ow} × {oh} px")
 
     mode = st.radio("Crop mode", ["Ratio preset", "Manual"], key="crop_mode", horizontal=True)

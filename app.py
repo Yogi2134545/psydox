@@ -18,20 +18,22 @@ try:
 except ImportError:
     _NB_AVAILABLE = False
 
-# Bootstrap: DB schema + feature auto-discovery (runs once per process)
-try:
-    from psydox.storage.database import init_db
-    init_db()
-    _log.info("Database initialised")
-except Exception as _e:
-    _log.warning("init_db failed: %s", _e)
+@st.cache_resource
+def _bootstrap() -> None:
+    try:
+        from psydox.storage.database import init_db
+        init_db()
+        _log.info("Database initialised")
+    except Exception as _e:
+        _log.warning("init_db failed: %s", _e)
+    try:
+        from psydox.features.loader import bootstrap_features
+        bootstrap_features()
+        _log.info("Features bootstrapped")
+    except Exception as _e:
+        _log.warning("bootstrap_features failed: %s", _e)
 
-try:
-    from psydox.features.loader import bootstrap_features
-    bootstrap_features()
-    _log.info("Features bootstrapped")
-except Exception as _e:
-    _log.warning("bootstrap_features failed: %s", _e)
+_bootstrap()
 
 st.set_page_config(page_title="Psydox", page_icon="⚡", layout="wide",
                    initial_sidebar_state="expanded")
@@ -461,24 +463,25 @@ if run_btn and have_file and not is_run:
 job_id = st.session_state.job_id
 job    = _read_job(job_id) if job_id else {}
 
-@st.fragment(run_every=2)
-def _poll():
-    jid = st.session_state.job_id
-    if not jid:
-        return
-    j = _read_job(jid)
-    if j.get("running"):
-        done   = j.get("done",   0)
-        total  = j.get("total",  0)
-        active = j.get("active", 0)
-        pct    = done / total if total > 0 else 0
-        label  = f"✅  {done} / {total} done — {int(pct*100)}%  |  ⬇️ {active} downloading now"
-        st.progress(pct, text=label)
-    elif (j.get("results") or j.get("error")) and not st.session_state.get("_shown_" + jid):
-        st.session_state["_shown_" + jid] = True
-        st.rerun(scope="app")
+if job_id:
+    @st.fragment(run_every=2)
+    def _poll():
+        jid = st.session_state.job_id
+        if not jid:
+            return
+        j = _read_job(jid)
+        if j.get("running"):
+            done   = j.get("done",   0)
+            total  = j.get("total",  0)
+            active = j.get("active", 0)
+            pct    = done / total if total > 0 else 0
+            label  = f"✅  {done} / {total} done — {int(pct*100)}%  |  ⬇️ {active} downloading now"
+            st.progress(pct, text=label)
+        elif (j.get("results") or j.get("error")) and not st.session_state.get("_shown_" + jid):
+            st.session_state["_shown_" + jid] = True
+            st.rerun(scope="app")
 
-_poll()
+    _poll()
 
 # ═════════════════════════════════════════════════════════════════════════════
 #  RESULTS
