@@ -603,29 +603,62 @@ def convert_to_4_5(img: Image.Image, cfg: dict) -> Image.Image:
 
     # Background handling:
     #   tuple (R,G,B) → replace mixed bg, then letterbox with that colour
-    #   "auto" / else → FIT/letterbox: scale to fit, extend background to fill canvas.
-    #                   Uses the detected original edge colour so strips blend with the
-    #                   original background (invisible on solid-bg images).
+    #   "auto" / else → FIT/letterbox: extend the image's own edge pixels into the
+    #                   strips so the background transitions seamlessly (no solid bar).
     _bgr = cfg.get("BG_RGB")
-    if isinstance(_bgr, (list, tuple)) and len(_bgr) == 3:
-        bg_fill = tuple(int(c) for c in _bgr)
-        img = replace_mixed_background(img, cfg)
-    else:
-        bg_fill = original_bg
 
     orig_w, orig_h = img.size
-
     scale = min(TW / orig_w, TH / orig_h, 2.0)
     nw = max(1, int(orig_w * scale))
     nh = max(1, int(orig_h * scale))
+
+    if isinstance(_bgr, (list, tuple)) and len(_bgr) == 3:
+        bg_fill = tuple(int(c) for c in _bgr)
+        img = replace_mixed_background(img, cfg)
+        scaled = img.resize((nw, nh), Image.LANCZOS)
+        px = (TW - nw) // 2
+        py = (TH - nh) // 2
+        canvas_arr = np.full((TH, TW, 3), bg_fill, dtype=np.uint8)
+        canvas_arr[py:py+nh, px:px+nw] = np.array(scaled, dtype=np.uint8)
+        return Image.fromarray(canvas_arr)
+
+    # Auto / legacy: FIT then extend edge pixels into the empty strips.
+    # Each strip row/column gets the averaged colour from the adjacent image edge,
+    # so gradient/styled backgrounds extend naturally with no visible seam.
     scaled = img.resize((nw, nh), Image.LANCZOS)
+    sc     = np.array(scaled, dtype=np.uint8)
+    px     = (TW - nw) // 2
+    py     = (TH - nh) // 2
+    px_r   = TW - nw - px
+    py_b   = TH - nh - py
 
-    px = (TW - nw) // 2
-    py = (TH - nh) // 2
+    # Corner fill colour: average of the top-left corner patch
+    _ec = min(8, nh, nw)
+    corner_c = tuple(int(c) for c in sc[:_ec, :_ec, :].mean(axis=(0, 1)).astype(np.uint8))
+    canvas_arr = np.full((TH, TW, 3), corner_c, dtype=np.uint8)
 
-    canvas_arr = np.full((TH, TW, 3), bg_fill, dtype=np.uint8)
-    canvas_arr[py:py+nh, px:px+nw] = np.array(scaled, dtype=np.uint8)
+    # Left / right strips — extend edge columns, one row at a time
+    if px > 0 or px_r > 0:
+        _ew  = min(8, nw)
+        l_edge = sc[:, :_ew, :].mean(axis=1, keepdims=True).astype(np.uint8)       # (nh,1,3)
+        r_edge = sc[:, max(0, nw - _ew):, :].mean(axis=1, keepdims=True).astype(np.uint8)
+        if px > 0:
+            canvas_arr[py:py + nh, :px]       = np.tile(l_edge, (1, px,   1))
+        if px_r > 0:
+            canvas_arr[py:py + nh, px + nw:]  = np.tile(r_edge, (1, px_r, 1))
 
+    # Top / bottom strips — extend edge rows, one column at a time
+    if py > 0 or py_b > 0:
+        _eh  = min(8, nh)
+        t_edge = sc[:_eh, :, :].mean(axis=0, keepdims=True).astype(np.uint8)       # (1,nw,3)
+        b_edge = sc[max(0, nh - _eh):, :, :].mean(axis=0, keepdims=True).astype(np.uint8)
+        if py > 0:
+            canvas_arr[:py, px:px + nw]       = np.tile(t_edge, (py,   1, 1))
+        if py_b > 0:
+            canvas_arr[py + nh:, px:px + nw]  = np.tile(b_edge, (py_b, 1, 1))
+
+    # Place scaled image in centre
+    canvas_arr[py:py + nh, px:px + nw] = sc
     return Image.fromarray(canvas_arr)
 
 

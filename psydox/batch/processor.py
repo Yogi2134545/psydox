@@ -164,29 +164,54 @@ def convert_image(img: Image.Image, cfg: BatchConfig) -> Image.Image:
 
     # Background handling — mirrors process_images.convert_to_4_5:
     #   tuple (R,G,B) → replace bg, then letterbox with that colour
-    #   "auto" / else → FIT/letterbox with detected original edge colour so strips
-    #                   blend with the original background (invisible on solid-bg images)
-    if isinstance(cfg.bg_rgb, (list, tuple)) and len(cfg.bg_rgb) == 3:
-        bg_fill = tuple(int(c) for c in cfg.bg_rgb)
-        img = _replace_mixed_background(img, bg_fill)
-    else:
-        bg_fill = original_bg
+    #   "auto" / else → FIT/letterbox: extend image edge pixels into strips
+    import numpy as _np
 
     orig_w, orig_h = img.size
-
-    # Scale to fit (letterbox / pillarbox — no cropping)
     scale = min(TW / orig_w, TH / orig_h, 2.0)
     nw    = max(1, int(orig_w * scale))
     nh    = max(1, int(orig_h * scale))
+
+    if isinstance(cfg.bg_rgb, (list, tuple)) and len(cfg.bg_rgb) == 3:
+        bg_fill = tuple(int(c) for c in cfg.bg_rgb)
+        img = _replace_mixed_background(img, bg_fill)
+        scaled = img.resize((nw, nh), Image.LANCZOS)
+        px = (TW - nw) // 2
+        py = (TH - nh) // 2
+        canvas_arr = _np.full((TH, TW, 3), bg_fill, dtype=_np.uint8)
+        canvas_arr[py:py + nh, px:px + nw] = _np.array(scaled, dtype=_np.uint8)
+        return Image.fromarray(canvas_arr)
+
     scaled = img.resize((nw, nh), Image.LANCZOS)
+    sc     = _np.array(scaled, dtype=_np.uint8)
+    px     = (TW - nw) // 2
+    py     = (TH - nh) // 2
+    px_r   = TW - nw - px
+    py_b   = TH - nh - py
 
-    # Centre on canvas
-    px = (TW - nw) // 2
-    py = (TH - nh) // 2
+    _ec = min(8, nh, nw)
+    corner_c = tuple(int(c) for c in sc[:_ec, :_ec, :].mean(axis=(0, 1)).astype(_np.uint8))
+    canvas_arr = _np.full((TH, TW, 3), corner_c, dtype=_np.uint8)
 
-    canvas_arr = np.full((TH, TW, 3), bg_fill, dtype=np.uint8)
-    canvas_arr[py:py + nh, px:px + nw] = np.array(scaled, dtype=np.uint8)
+    if px > 0 or px_r > 0:
+        _ew  = min(8, nw)
+        l_edge = sc[:, :_ew, :].mean(axis=1, keepdims=True).astype(_np.uint8)
+        r_edge = sc[:, max(0, nw - _ew):, :].mean(axis=1, keepdims=True).astype(_np.uint8)
+        if px > 0:
+            canvas_arr[py:py + nh, :px]      = _np.tile(l_edge, (1, px,   1))
+        if px_r > 0:
+            canvas_arr[py:py + nh, px + nw:] = _np.tile(r_edge, (1, px_r, 1))
 
+    if py > 0 or py_b > 0:
+        _eh  = min(8, nh)
+        t_edge = sc[:_eh, :, :].mean(axis=0, keepdims=True).astype(_np.uint8)
+        b_edge = sc[max(0, nh - _eh):, :, :].mean(axis=0, keepdims=True).astype(_np.uint8)
+        if py > 0:
+            canvas_arr[:py, px:px + nw]      = _np.tile(t_edge, (py,   1, 1))
+        if py_b > 0:
+            canvas_arr[py + nh:, px:px + nw] = _np.tile(b_edge, (py_b, 1, 1))
+
+    canvas_arr[py:py + nh, px:px + nw] = sc
     return Image.fromarray(canvas_arr)
 
 
