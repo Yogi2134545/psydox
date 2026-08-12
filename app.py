@@ -376,8 +376,8 @@ with st.sidebar:
     preset_size = RATIO_PRESETS[rc]
     tw, th = preset_size if preset_size is not None else (1080, 1350)
     col_w, col_h = st.columns(2)
-    tw = col_w.number_input("Width (px)",  360, 4320, int(tw))
-    th = col_h.number_input("Height (px)", 450, 5400, int(th))
+    tw = col_w.number_input("Width (px)",  360, 4320, int(tw), key=f"tw_{rc}")
+    th = col_h.number_input("Height (px)", 450, 5400, int(th), key=f"th_{rc}")
     jq = st.slider("JPEG Quality", 50, 95, int(DEFAULT_JPEG_QUALITY))
 
     st.markdown("## 🌐 Network")
