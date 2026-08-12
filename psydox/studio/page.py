@@ -298,10 +298,14 @@ def render_studio(
     with tb6:
         cur = _current_bytes()
         if cur:
+            _is_png = cur[:4] == b'\x89PNG'
+            _ext  = "png" if _is_png else "jpg"
+            _mime = "image/png" if _is_png else "image/jpeg"
+            _proj = st.session_state.studio_project_name.replace(' ', '_')
             st.download_button(
                 "⬇ Export", data=cur,
-                file_name=f"{st.session_state.studio_project_name.replace(' ', '_')}.jpg",
-                mime="image/jpeg", use_container_width=True, key="stu_export",
+                file_name=f"{_proj}.{_ext}",
+                mime=_mime, use_container_width=True, key="stu_export",
             )
 
     st.markdown("<div style='margin-bottom:4px'/>", unsafe_allow_html=True)
@@ -829,6 +833,9 @@ def _props_crop(cur: bytes, user_email: str) -> None:
         nw, nh = int(right - left), int(bottom - top)
 
     st.caption(f"Output: {nw} × {nh} px")
+    if nw <= 0 or nh <= 0:
+        st.warning("Invalid crop box — Right must be greater than Left, and Bottom greater than Top.")
+        return
     inputs = {
         "image_bytes": cur,
         "operation": "crop",
@@ -847,7 +854,9 @@ def _props_enhance(cur: bytes, user_email: str) -> None:
     if st.button("✨ Apply Enhance", use_container_width=True, type="primary", key="btn_enhance"):
         with st.spinner("Enhancing..."):
             result = exec_enhance(cur, brightness, contrast, saturation, sharpness)
-        if result:
+        if result is None:
+            st.error("Enhance failed — please try again.")
+        elif result:
             changed = []
             if brightness != 1.0: changed.append(f"brightness {brightness:.2f}")
             if contrast   != 1.0: changed.append(f"contrast {contrast:.2f}")
@@ -1261,12 +1270,7 @@ def _render_angle_results() -> None:
                 )
             else:
                 if outcome == "APPROVED":
-                    if st.button(
-                        "Set as current image",
-                        key=f"set_current_{out.get('angle_id', label)}",
-                    ):
-                        _push_history(out["bytes"], label)
-                        st.rerun()
+                    st.caption(f"No image bytes available. Status: {outcome}")
                 else:
                     st.caption(f"No image produced. Status: {outcome}")
 

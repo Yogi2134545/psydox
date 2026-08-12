@@ -865,11 +865,7 @@ def render_nano_banana():
                     try:
                         result = engine.editor.adjust(img, settings)
                         if ai_finish != "None":
-                            if not GOOGLE_API_KEY:
-                                st.warning("API key not set — AI finish skipped.")
-                            else:
-                                result = engine.editor.apply_ai_finish(result, ai_finish)
-                                st.session_state.nb_api_calls += 1
+                            result = engine.editor.apply_ai_finish(result, ai_finish)
                         result = _ratio_to_pil(result, ratio_wh)
                         elapsed = time.time() - t0
                         st.session_state.nb_gen_time += elapsed
@@ -1108,7 +1104,7 @@ def render_nano_banana():
             elif not GOOGLE_API_KEY and batch_mode != "edit":
                 _api_warning()
             else:
-                import tempfile, pathlib, zipfile as _zf
+                import tempfile, pathlib, zipfile as _zf, os as _os
 
                 config = {"mode": batch_mode, "angles": batch_angles, "ratio_wh": ratio_wh}
                 if batch_mode == "background":
@@ -1128,7 +1124,10 @@ def render_nano_banana():
                             with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tf:
                                 tf.write(batch_excel.getvalue())
                                 excel_path = tf.name
-                            results = engine.process_batch(excel_path, config, _progress)
+                            try:
+                                results = engine.process_batch(excel_path, config, _progress)
+                            finally:
+                                _os.unlink(excel_path)
                         else:
                             # ZIP input: extract images and process each
                             results = _process_zip_batch(

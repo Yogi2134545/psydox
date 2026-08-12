@@ -322,9 +322,9 @@ class BackgroundFeature(FeatureModule):
         custom_prompt = inputs.get("ai_prompt", "")
         product_desc  = inputs.get("product_desc", "")
 
+        _studio_base = "Professional studio photography background, seamless paper backdrop, soft diffused lighting, clean and premium commercial look"
         prompt_map = {
-            "studio":    "Professional studio photography background, seamless paper backdrop, "
-                         "soft diffused lighting, clean and premium commercial look",
+            "studio":    (_studio_base + (f", {custom_prompt}" if custom_prompt else "")),
             "lifestyle": custom_prompt or "Authentic lifestyle setting, natural environment, "
                          "candid and real, modern lifestyle photography",
             "outdoor":   custom_prompt or "Beautiful outdoor environment, natural lighting, "

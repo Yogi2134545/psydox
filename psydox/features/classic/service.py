@@ -183,22 +183,22 @@ class ClassicFeature(FeatureModule):
         from PIL import Image
         size    = int(inputs.get("size", 2000))
         padding = float(inputs.get("padding", 0.08))
-        fmt     = inputs.get("format", "JPEG").upper()
         bg_hex  = inputs.get("bg_color", "#FFFFFF")
-        bg      = _hex_to_rgb(bg_hex)
+        is_transparent = (bg_hex or "").strip().lower() == "transparent"
+        fmt = "PNG" if is_transparent else inputs.get("format", "JPEG").upper()
 
         avail = int(size * (1 - 2 * padding))
-        img_rgb = img.convert("RGBA") if img.mode == "RGBA" else img.convert("RGB")
-        img_rgb.thumbnail((avail, avail), Image.LANCZOS)
+        img_rgba = img.convert("RGBA")
+        img_rgba.thumbnail((avail, avail), Image.LANCZOS)
 
-        canvas = Image.new("RGB", (size, size), bg)
-        x = (size - img_rgb.width)  // 2
-        y = (size - img_rgb.height) // 2
-
-        if img_rgb.mode == "RGBA":
-            canvas.paste(img_rgb, (x, y), img_rgb)
+        if is_transparent:
+            canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
         else:
-            canvas.paste(img_rgb, (x, y))
+            bg = _hex_to_rgb(bg_hex)
+            canvas = Image.new("RGB", (size, size), bg)
+        x = (size - img_rgba.width)  // 2
+        y = (size - img_rgba.height) // 2
+        canvas.paste(img_rgba, (x, y), img_rgba)
 
         buf = io.BytesIO()
         _save(canvas, buf, fmt)
@@ -317,7 +317,19 @@ def _mime(fmt: str) -> str:
 
 
 def _hex_to_rgb(hex_str: str) -> tuple:
-    h = hex_str.lstrip("#")
+    _NAMED = {
+        "white": (255, 255, 255), "black": (0, 0, 0),
+        "transparent": (255, 255, 255),  # canvas is RGB so transparent → white
+    }
+    s = (hex_str or "").strip().lower()
+    if s in _NAMED:
+        return _NAMED[s]
+    h = s.lstrip("#")
+    if len(h) == 3:
+        h = h[0]*2 + h[1]*2 + h[2]*2
     if len(h) == 6:
-        return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+        try:
+            return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+        except ValueError:
+            pass
     return (255, 255, 255)
