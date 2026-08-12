@@ -112,6 +112,7 @@ _AI_TOOLS = [
     ("ai_model",      "👤", "AI Model",      True),
     ("ai_scene",      "🏠", "AI Scene",      True),
     ("ai_angles",     "🎯", "AI Angles",     True),
+    ("jadu_ka_ghar",  "🪄", "Jadu Ka Ghar",  True),
 ]
 
 # ── State helpers ─────────────────────────────────────────────────────────────
@@ -723,6 +724,7 @@ def _render_properties(user_email: str, is_owner_user: bool) -> None:
         "ai_model":      _props_ai_model,
         "ai_scene":      _props_ai_scene,
         "ai_angles":     _props_ai_angles,
+        "jadu_ka_ghar":  _props_jadu_ka_ghar,
     }
     fn = dispatch.get(tool)
     if fn:
@@ -1273,6 +1275,384 @@ def _render_angle_results() -> None:
                     st.caption(f"No image bytes available. Status: {outcome}")
                 else:
                     st.caption(f"No image produced. Status: {outcome}")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  JADU KA GHAR — Ideogram AI  (owner only)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _props_jadu_ka_ghar(cur: bytes, user_email: str) -> None:
+    """
+    Jadu Ka Ghar — Ideogram AI Studio panel.
+
+    Requires IDEOGRAM_API_KEY in Railway environment variables.
+    Modes: Remix · Replace BG · Remove BG · Generate · Describe
+    """
+    from jadu_ka_ghar.client import (
+        STYLE_TYPES, STYLE_PRESETS, ASPECT_RATIOS,
+        MAGIC_PROMPT_OPTIONS, RENDERING_SPEEDS, COLOR_PALETTES,
+    )
+
+    # ── API key status ────────────────────────────────────────────────────────
+    import os as _os
+    _key_set = bool(_os.environ.get("IDEOGRAM_API_KEY", "").strip())
+    if not _key_set:
+        st.warning(
+            "**IDEOGRAM_API_KEY not set.**  \n"
+            "Add it to Railway → Variables → `IDEOGRAM_API_KEY`.  \n"
+            "Get a key at [ideogram.ai](https://ideogram.ai/manage-api)."
+        )
+        st.caption(
+            "Jadu Ka Ghar uses Ideogram AI — a separate service from Google AI. "
+            "It specialises in photorealistic style remix, background AI, and text-in-images."
+        )
+
+    st.markdown(
+        '<div class="psx-owner-banner" style="background:linear-gradient(90deg,'
+        'rgba(168,85,247,.15),rgba(236,72,153,.15));border-color:rgba(168,85,247,.4);">'
+        "🪄 Powered by Ideogram AI — Jadu Ka Ghar</div>",
+        unsafe_allow_html=True,
+    )
+
+    # ── Mode tabs ─────────────────────────────────────────────────────────────
+    tab_remix, tab_replace, tab_remove, tab_gen, tab_describe = st.tabs([
+        "✨ Remix",
+        "🎨 Replace BG",
+        "🪄 Remove BG",
+        "🌟 Generate",
+        "🔍 Describe",
+    ])
+
+    # ── Common speed selector (shown in each tab to keep UI compact) ──────────
+    def _speed_select(key_sfx: str) -> str:
+        return st.selectbox(
+            "Speed", RENDERING_SPEEDS, index=0,
+            help="TURBO = faster but may be lower quality; STANDARD = best quality",
+            key=f"jkg_speed_{key_sfx}",
+        )
+
+    # ════════════════════════════════════════════════════════
+    # TAB 1 — REMIX
+    # ════════════════════════════════════════════════════════
+    with tab_remix:
+        st.caption(
+            "Keep your product as visual reference and apply a new style, "
+            "scene, or aesthetic via Ideogram remix."
+        )
+        prompt = st.text_area(
+            "Style / scene prompt",
+            placeholder=(
+                "e.g. 'Luxury white marble studio, soft diffused lighting, "
+                "high-fashion editorial look'"
+            ),
+            height=90,
+            key="jkg_remix_prompt",
+        )
+
+        c1, c2 = st.columns(2)
+        with c1:
+            style_type = st.selectbox(
+                "Style type", STYLE_TYPES,
+                index=STYLE_TYPES.index("GENERAL"),
+                key="jkg_remix_style_type",
+            )
+            aspect_ratio = st.selectbox(
+                "Aspect ratio", ASPECT_RATIOS,
+                index=ASPECT_RATIOS.index("AUTO"),
+                key="jkg_remix_aspect",
+            )
+        with c2:
+            style_preset = st.selectbox(
+                "Style preset", STYLE_PRESETS,
+                index=0,
+                key="jkg_remix_style_preset",
+            )
+            magic_prompt = st.selectbox(
+                "Magic Prompt",
+                MAGIC_PROMPT_OPTIONS,
+                index=0,
+                help="AUTO = Ideogram's LLM enhances your prompt automatically",
+                key="jkg_remix_magic",
+            )
+
+        image_weight = st.slider(
+            "Image weight (product fidelity)",
+            min_value=0, max_value=100, value=50,
+            help="Higher = output stays closer to the input product image",
+            key="jkg_remix_imgwt",
+        )
+        negative_prompt = st.text_input(
+            "Negative prompt (optional)",
+            placeholder="e.g. blurry, ugly, low quality, watermark",
+            key="jkg_remix_neg",
+        )
+        rendering_speed = _speed_select("remix")
+        color_palette = st.selectbox(
+            "Color palette (optional)", COLOR_PALETTES,
+            index=0, key="jkg_remix_palette",
+        )
+
+        if st.button(
+            "✨ Remix with Ideogram",
+            use_container_width=True, type="primary",
+            key="apply_jkg_remix",
+            disabled=not _key_set,
+        ):
+            if not prompt.strip():
+                st.warning("Enter a style/scene prompt above.")
+            else:
+                inputs = {
+                    "mode": "remix",
+                    "image_bytes": cur,
+                    "prompt": prompt,
+                    "style_type": style_type,
+                    "style_preset": style_preset,
+                    "aspect_ratio": aspect_ratio,
+                    "magic_prompt": magic_prompt,
+                    "negative_prompt": negative_prompt,
+                    "image_weight": image_weight,
+                    "rendering_speed": rendering_speed,
+                    "color_palette": color_palette,
+                }
+                with st.spinner("Remixing with Ideogram AI…"):
+                    result = _execute_tool("jadu_ka_ghar", inputs, user_email)
+                if result and result.get("success") and result.get("outputs"):
+                    _push_history(result["outputs"][0]["bytes"], "Jadu — Remix")
+                    st.rerun()
+                elif result:
+                    for err in result.get("errors", ["Unknown error"]):
+                        st.error(err)
+
+    # ════════════════════════════════════════════════════════
+    # TAB 2 — REPLACE BACKGROUND
+    # ════════════════════════════════════════════════════════
+    with tab_replace:
+        st.caption(
+            "AI-powered background replacement — Ideogram preserves the product "
+            "and regenerates everything else."
+        )
+
+        _BG_PRESETS = {
+            "Custom prompt": "",
+            "Pure white studio": "Pure white seamless studio background, clean minimal",
+            "Luxury marble": "White Carrara marble surface with grey veining, luxury product photography",
+            "Wood surface": "Natural warm-toned wood grain surface, organic artisan texture",
+            "Concrete": "Raw textured concrete surface, industrial modern aesthetic",
+            "Golden Hour outdoor": "Warm golden-hour sunlight, long soft shadows, outdoor lifestyle",
+            "Tropical beach": "White-sand tropical beach with turquoise ocean, bright sunlight",
+            "Moody dark studio": "Pure black studio background with dramatic low-key lighting",
+            "Forest nature": "Lush green forest with dappled sunlight filtering through the canopy",
+            "City rooftop": "Modern city rooftop terrace at sunset, skyline in background",
+            "Cafe interior": "Cosy artisan café with exposed brick, warm lighting and coffee aesthetic",
+            "Snow winter": "Clean snow-covered winter landscape, pristine white ground",
+            "Neon cyberpunk": "Neon-lit cyberpunk city at night, vivid magenta and cyan glow",
+        }
+
+        bg_preset = st.selectbox(
+            "Background preset", list(_BG_PRESETS.keys()),
+            key="jkg_repbg_preset",
+        )
+        if bg_preset == "Custom prompt":
+            bg_prompt = st.text_area(
+                "Describe the background",
+                height=80,
+                placeholder="e.g. Luxury penthouse terrace with city skyline at night",
+                key="jkg_repbg_custom",
+            )
+        else:
+            bg_prompt = _BG_PRESETS[bg_preset]
+            extra = st.text_input(
+                "Additional details (optional)",
+                placeholder="e.g. warm tones, shallow depth of field",
+                key="jkg_repbg_extra",
+            )
+            if extra:
+                bg_prompt = f"{bg_prompt}, {extra}"
+            st.caption(f"Prompt: {bg_prompt}")
+
+        c1b, c2b = st.columns(2)
+        with c1b:
+            magic_prompt_rb = st.selectbox(
+                "Magic Prompt", MAGIC_PROMPT_OPTIONS,
+                key="jkg_repbg_magic",
+            )
+        with c2b:
+            style_preset_rb = st.selectbox(
+                "Style preset", STYLE_PRESETS,
+                index=0, key="jkg_repbg_style",
+            )
+        rendering_speed_rb = _speed_select("repbg")
+
+        if st.button(
+            "🎨 Replace Background",
+            use_container_width=True, type="primary",
+            key="apply_jkg_repbg",
+            disabled=not _key_set,
+        ):
+            if not bg_prompt.strip():
+                st.warning("Enter a background description.")
+            else:
+                inputs = {
+                    "mode": "replace_bg",
+                    "image_bytes": cur,
+                    "prompt": bg_prompt,
+                    "magic_prompt": magic_prompt_rb,
+                    "style_preset": style_preset_rb,
+                    "rendering_speed": rendering_speed_rb,
+                }
+                with st.spinner("Replacing background with Ideogram AI…"):
+                    result = _execute_tool("jadu_ka_ghar", inputs, user_email)
+                if result and result.get("success") and result.get("outputs"):
+                    _push_history(result["outputs"][0]["bytes"], "Jadu — Replace BG")
+                    st.rerun()
+                elif result:
+                    for err in result.get("errors", ["Unknown error"]):
+                        st.error(err)
+
+    # ════════════════════════════════════════════════════════
+    # TAB 3 — REMOVE BACKGROUND
+    # ════════════════════════════════════════════════════════
+    with tab_remove:
+        st.caption(
+            "One-click AI background removal via Ideogram. "
+            "Returns a PNG with transparent background — perfect for packshots."
+        )
+        st.info(
+            "No parameters needed — Ideogram automatically detects and removes "
+            "the background, preserving the product with clean edges."
+        )
+
+        if st.button(
+            "🪄 Remove Background",
+            use_container_width=True, type="primary",
+            key="apply_jkg_rembg",
+            disabled=not _key_set,
+        ):
+            inputs = {"mode": "remove_bg", "image_bytes": cur}
+            with st.spinner("Removing background with Ideogram AI…"):
+                result = _execute_tool("jadu_ka_ghar", inputs, user_email)
+            if result and result.get("success") and result.get("outputs"):
+                _push_history(result["outputs"][0]["bytes"], "Jadu — Remove BG")
+                st.rerun()
+            elif result:
+                for err in result.get("errors", ["Unknown error"]):
+                    st.error(err)
+
+    # ════════════════════════════════════════════════════════
+    # TAB 4 — GENERATE
+    # ════════════════════════════════════════════════════════
+    with tab_gen:
+        st.caption(
+            "Pure text-to-image generation — describe your product scene and "
+            "Ideogram creates it from scratch. Use your uploaded image as reference only."
+        )
+
+        gen_prompt = st.text_area(
+            "Generation prompt",
+            placeholder=(
+                "e.g. 'Nike Air Max 90 sneakers on a pure white studio background, "
+                "product photography, ultra-high resolution'"
+            ),
+            height=100,
+            key="jkg_gen_prompt",
+        )
+        gen_neg = st.text_input(
+            "Negative prompt (optional)",
+            placeholder="blurry, deformed, low quality, text, watermark",
+            key="jkg_gen_neg",
+        )
+
+        c1g, c2g = st.columns(2)
+        with c1g:
+            gen_style_type = st.selectbox(
+                "Style type", STYLE_TYPES,
+                index=STYLE_TYPES.index("REALISTIC"),
+                key="jkg_gen_style_type",
+            )
+            gen_aspect = st.selectbox(
+                "Aspect ratio", ASPECT_RATIOS,
+                index=ASPECT_RATIOS.index("1x1"),
+                key="jkg_gen_aspect",
+            )
+        with c2g:
+            gen_preset = st.selectbox(
+                "Style preset", STYLE_PRESETS,
+                index=STYLE_PRESETS.index("PRODUCT_PHOTOGRAPHY"),
+                key="jkg_gen_preset",
+            )
+            gen_magic = st.selectbox(
+                "Magic Prompt", MAGIC_PROMPT_OPTIONS,
+                index=0, key="jkg_gen_magic",
+            )
+
+        gen_speed    = _speed_select("gen")
+        gen_palette  = st.selectbox(
+            "Color palette (optional)", COLOR_PALETTES,
+            index=0, key="jkg_gen_palette",
+        )
+
+        if st.button(
+            "🌟 Generate Image",
+            use_container_width=True, type="primary",
+            key="apply_jkg_gen",
+            disabled=not _key_set,
+        ):
+            if not gen_prompt.strip():
+                st.warning("Enter a generation prompt above.")
+            else:
+                inputs = {
+                    "mode": "generate",
+                    "prompt": gen_prompt,
+                    "negative_prompt": gen_neg,
+                    "style_type": gen_style_type,
+                    "style_preset": gen_preset,
+                    "aspect_ratio": gen_aspect,
+                    "magic_prompt": gen_magic,
+                    "rendering_speed": gen_speed,
+                    "color_palette": gen_palette,
+                }
+                with st.spinner("Generating with Ideogram AI…"):
+                    result = _execute_tool("jadu_ka_ghar", inputs, user_email)
+                if result and result.get("success") and result.get("outputs"):
+                    _push_history(result["outputs"][0]["bytes"], "Jadu — Generate")
+                    st.rerun()
+                elif result:
+                    for err in result.get("errors", ["Unknown error"]):
+                        st.error(err)
+
+    # ════════════════════════════════════════════════════════
+    # TAB 5 — DESCRIBE
+    # ════════════════════════════════════════════════════════
+    with tab_describe:
+        st.caption(
+            "Reverse-engineer your product image into a reusable text prompt. "
+            "Copy the result into Remix or Generate for consistent re-generation."
+        )
+
+        if st.button(
+            "🔍 Describe This Image",
+            use_container_width=True, type="primary",
+            key="apply_jkg_describe",
+            disabled=not _key_set,
+        ):
+            inputs = {"mode": "describe", "image_bytes": cur}
+            with st.spinner("Analysing image with Ideogram AI…"):
+                result = _execute_tool("jadu_ka_ghar", inputs, user_email)
+            if result and result.get("success"):
+                desc = result.get("metadata", {}).get("description", "")
+                if desc:
+                    st.session_state["jkg_last_description"] = desc
+                else:
+                    st.warning("Ideogram returned an empty description.")
+            elif result:
+                for err in result.get("errors", ["Unknown error"]):
+                    st.error(err)
+
+        desc = st.session_state.get("jkg_last_description", "")
+        if desc:
+            st.markdown("**Description:**")
+            st.code(desc, language=None)
+            st.caption("Copy this prompt into Remix or Generate tab for consistent re-generation.")
 
 
 # ── Generic apply button ──────────────────────────────────────────────────────

@@ -100,6 +100,13 @@ _CATALOGUE: list[dict] = [
         "description": "Stable Diffusion — fine-tuned for product photography",
         "icon": "🟣",
     },
+    {
+        "id": "ideogram", "display_name": "Ideogram AI — Jadu Ka Ghar",
+        "env_var": "IDEOGRAM_API_KEY",
+        "default_model": "ideogram-v3",
+        "description": "Ideogram V3 — best-in-class text rendering, remix, and style transfer",
+        "icon": "🪄",
+    },
 ]
 
 
@@ -159,6 +166,9 @@ class ProviderRegistry:
         if pid == "stability":
             from .providers.stability import StabilityImageProvider
             return StabilityImageProvider()
+        if pid == "ideogram":
+            from .providers.ideogram import IdeogramImageProvider
+            return IdeogramImageProvider()
         raise ValueError(f"Unknown provider: {pid}")
 
     def list(self) -> list[ProviderInfo]:
