@@ -10,7 +10,7 @@ _NO_API_MSG = (
     "Your current GOOGLE_API_KEY supports text + vision only.\n\n"
     "To enable image generation:\n"
     "1. Go to https://aistudio.google.com\n"
-    "2. Enable Imagen 3 for your account (requires billing)\n"
+    "2. Enable the Imagen API for your account (requires billing)\n"
     "3. Or use Vertex AI with a service account key\n\n"
     "Alternatively, use the Background tab (works without Imagen)."
 )

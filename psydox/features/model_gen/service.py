@@ -50,12 +50,10 @@ class ModelGenFeature(FeatureModule):
 
         try:
             from psydox.ai_core.orchestrator import get_orchestrator, AIRequest
-            from psydox.ai_core.prompt_engine import PromptEngine, PromptContext
             from psydox.ai_core.router import TaskType
             from nano_banana.prompt_builder import build_model_prompt
 
             prompt = build_model_prompt(gender, age_group, ethnicity, style, product_desc, angle)
-            ctx    = PromptContext(product_desc=product_desc, style=style)
 
             request = AIRequest(
                 task=TaskType.MODEL_GENERATION,
