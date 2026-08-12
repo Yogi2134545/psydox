@@ -181,12 +181,24 @@ def _resolve_url(url: str) -> str:
 
     # Dropbox — both old (/s/) and new (/scl/fi/) share links
     if 'dropbox.com' in url or 'dropboxusercontent.com' in url:
-        url = url.replace('www.dropbox.com', 'dl.dropboxusercontent.com')
-        # Strip 'dl' and 'st' params — 'st' is a browser-session token that blocks server downloads
+        # Normalize domain: old links use dl.dropboxusercontent.com directly;
+        # new /scl/fi/ links use www.dropbox.com + dl=1 (dl.dropboxusercontent.com
+        # doesn't serve the new-format links reliably).
+        url = url.replace('dl.dropboxusercontent.com', 'www.dropbox.com')
         parsed = urlparse(url)
         qs = {k: v for k, v in parse_qs(parsed.query, keep_blank_values=True).items()
               if k not in ('dl', 'st')}
-        return urlunparse(parsed._replace(query=urlencode(qs, doseq=True)))
+        if '/scl/fi/' in parsed.path:
+            # New link format — force download flag; rlkey must be preserved
+            qs['dl'] = ['1']
+            return urlunparse(parsed._replace(
+                netloc='www.dropbox.com', query=urlencode(qs, doseq=True)
+            ))
+        else:
+            # Old /s/ links — use the raw CDN domain, no query params needed
+            return urlunparse(parsed._replace(
+                netloc='dl.dropboxusercontent.com', query=urlencode(qs, doseq=True)
+            ))
 
 
     # OneDrive share links: embed → download
