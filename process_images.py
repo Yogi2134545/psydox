@@ -715,7 +715,7 @@ def _bg_from_cfg(cfg: dict, detected_bg: tuple = None) -> tuple:
     When BG_RGB is 'auto', returns detected_bg (from the image) if available."""
     rgb = cfg.get("BG_RGB")
     if rgb == "auto":
-        return detected_bg if detected_bg else (255, 255, 255)
+        return detected_bg if detected_bg else (DEFAULT_BG_GREY, DEFAULT_BG_GREY, DEFAULT_BG_GREY)
     if rgb and isinstance(rgb, (list, tuple)) and len(rgb) == 3:
         return tuple(int(c) for c in rgb)
     v = cfg.get("BG_GREY", DEFAULT_BG_GREY)
@@ -853,7 +853,7 @@ def _process_one(args):
 
     if not save_image(processed, out_path, cfg["JPEG_QUALITY"]):
         # Retry once with reduced quality before giving up
-        if not save_image(processed, out_path, max(70, cfg["JPEG_QUALITY"] - 10)):
+        if not save_image(processed, out_path, max(50, cfg["JPEG_QUALITY"] - 10)):
             result.update(status="FAILED_SAVE", is_skipped=True)
             return result
 

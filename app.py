@@ -373,7 +373,8 @@ with st.sidebar:
     rkeys = list(RATIO_PRESETS.keys())
     ridx  = next((i for i,k in enumerate(rkeys) if "1080" in k), 0)
     rc    = st.selectbox("Ratio Preset", rkeys, index=ridx)
-    tw, th = RATIO_PRESETS[rc]
+    preset_size = RATIO_PRESETS[rc]
+    tw, th = preset_size if preset_size is not None else (1080, 1350)
     col_w, col_h = st.columns(2)
     tw = col_w.number_input("Width (px)",  360, 4320, int(tw))
     th = col_h.number_input("Height (px)", 450, 5400, int(th))
