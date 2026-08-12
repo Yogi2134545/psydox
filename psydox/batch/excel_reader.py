@@ -157,21 +157,32 @@ def resolve_url(url: str) -> str:
     if m:
         return f"https://drive.google.com/uc?export=download&id={m.group(1)}"
 
-    # Dropbox
+    # Dropbox — old (/s/), new file (/scl/fi/), and folder-preview (/scl/fo/) links
     if 'dropbox.com' in url or 'dropboxusercontent.com' in url:
         url = url.replace('dl.dropboxusercontent.com', 'www.dropbox.com')
         parsed = urlparse(url)
         qs = {k: v for k, v in parse_qs(parsed.query, keep_blank_values=True).items()
-              if k not in ('dl', 'st')}
+              if k not in ('dl', 'st', 'e', 'subfolder_nav_tracking')}
+
+        if '/scl/fo/' in parsed.path:
+            preview = qs.pop('preview', [None])[0]
+            path = parsed.path.rstrip('/')
+            if preview:
+                path = path + '/' + preview
+            return urlunparse(parsed._replace(
+                netloc='dl.dropboxusercontent.com', path=path,
+                query=urlencode(qs, doseq=True)
+            ))
+
         if '/scl/fi/' in parsed.path:
             qs['dl'] = ['1']
             return urlunparse(parsed._replace(
                 netloc='www.dropbox.com', query=urlencode(qs, doseq=True)
             ))
-        else:
-            return urlunparse(parsed._replace(
-                netloc='dl.dropboxusercontent.com', query=urlencode(qs, doseq=True)
-            ))
+
+        return urlunparse(parsed._replace(
+            netloc='dl.dropboxusercontent.com', query=urlencode(qs, doseq=True)
+        ))
 
 
     # OneDrive

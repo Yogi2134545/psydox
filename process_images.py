@@ -179,26 +179,38 @@ def _resolve_url(url: str) -> str:
     if m:
         return f"https://drive.google.com/uc?export=download&id={m.group(1)}"
 
-    # Dropbox — both old (/s/) and new (/scl/fi/) share links
+    # Dropbox — old (/s/), new file (/scl/fi/), and folder-preview (/scl/fo/) links
     if 'dropbox.com' in url or 'dropboxusercontent.com' in url:
-        # Normalize domain: old links use dl.dropboxusercontent.com directly;
-        # new /scl/fi/ links use www.dropbox.com + dl=1 (dl.dropboxusercontent.com
-        # doesn't serve the new-format links reliably).
         url = url.replace('dl.dropboxusercontent.com', 'www.dropbox.com')
         parsed = urlparse(url)
+        # Strip browser-session token (st=) and tracking params; keep rlkey
         qs = {k: v for k, v in parse_qs(parsed.query, keep_blank_values=True).items()
-              if k not in ('dl', 'st')}
+              if k not in ('dl', 'st', 'e', 'subfolder_nav_tracking')}
+
+        if '/scl/fo/' in parsed.path:
+            # Folder share link — two sub-formats:
+            # A) file already in path: …/HASH/SUBFOLDER/file.jpg  →  use CDN domain directly
+            # B) preview= param: …/HASH/SUBFOLDER?preview=file.jpg  →  append file to path, use CDN
+            preview = qs.pop('preview', [None])[0]
+            path = parsed.path.rstrip('/')
+            if preview:
+                path = path + '/' + preview   # move preview file into path
+            return urlunparse(parsed._replace(
+                netloc='dl.dropboxusercontent.com', path=path,
+                query=urlencode(qs, doseq=True)
+            ))
+
         if '/scl/fi/' in parsed.path:
-            # New link format — force download flag; rlkey must be preserved
+            # New file share link — www.dropbox.com + dl=1
             qs['dl'] = ['1']
             return urlunparse(parsed._replace(
                 netloc='www.dropbox.com', query=urlencode(qs, doseq=True)
             ))
-        else:
-            # Old /s/ links — use the raw CDN domain, no query params needed
-            return urlunparse(parsed._replace(
-                netloc='dl.dropboxusercontent.com', query=urlencode(qs, doseq=True)
-            ))
+
+        # Old /s/ links — CDN domain, no extra params needed
+        return urlunparse(parsed._replace(
+            netloc='dl.dropboxusercontent.com', query=urlencode(qs, doseq=True)
+        ))
 
 
     # OneDrive share links: embed → download
@@ -887,26 +899,6 @@ def process_all(cfg: dict,
     total = len(all_tasks)
     pack_images_by_style = {sc: [] for sc in style_map}
 
-    # Early Dropbox block detection — test first URL before processing all
-    first_urls = [t[0] for t in all_tasks if "dropbox" in str(t[0]).lower()]
-    if first_urls:
-        test_url = _resolve_url(first_urls[0])
-        try:
-            _test = _SESSION.get(test_url, timeout=(5, 10), stream=True)
-            _ct = _test.headers.get("Content-Type", "")
-            _test.close()
-            if "text/html" in _ct:
-                raise RuntimeError(
-                    "Dropbox is blocking server-side downloads for these URLs.\n\n"
-                    "Your Dropbox links contain '&st=' session tokens that only work in a browser.\n\n"
-                    "To fix: use Google Drive links instead, or remove '&st=XXXXXXXX' from all "
-                    "Dropbox URLs in your Excel file. Go to Dropbox → Share → 'Anyone with the link' "
-                    "and copy the fresh link (it should not contain '&st=')."
-                )
-        except RuntimeError:
-            raise
-        except Exception:
-            pass  # Network error on test — proceed anyway
 
     import threading as _threading
     _started_count = [0]
