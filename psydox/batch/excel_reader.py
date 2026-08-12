@@ -17,7 +17,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 _log = logging.getLogger("psydox.batch.excel_reader")
 
@@ -160,9 +160,12 @@ def resolve_url(url: str) -> str:
     # Dropbox
     if 'dropbox.com' in url or 'dropboxusercontent.com' in url:
         url = url.replace('www.dropbox.com', 'dl.dropboxusercontent.com')
-        url = re.sub(r'[?&]dl=[01]', lambda m: '' if m.group().startswith('?') else '', url)
-        url = url.rstrip('?').rstrip('&')
-        return url
+        # Strip 'dl' and 'st' params — 'st' is a browser-session token that blocks server downloads
+        parsed = urlparse(url)
+        qs = {k: v for k, v in parse_qs(parsed.query, keep_blank_values=True).items()
+              if k not in ('dl', 'st')}
+        return urlunparse(parsed._replace(query=urlencode(qs, doseq=True)))
+
 
     # OneDrive
     if '1drv.ms' in url or 'onedrive.live.com' in url:

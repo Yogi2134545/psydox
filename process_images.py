@@ -42,7 +42,7 @@ BG_PRESETS = {
 
 import os, re, csv, time, shutil, logging, hashlib, threading, queue, sys
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 import requests
 import numpy as np
@@ -181,13 +181,13 @@ def _resolve_url(url: str) -> str:
 
     # Dropbox — both old (/s/) and new (/scl/fi/) share links
     if 'dropbox.com' in url or 'dropboxusercontent.com' in url:
-        # Switch to dl.dropboxusercontent.com for direct raw file access
         url = url.replace('www.dropbox.com', 'dl.dropboxusercontent.com')
-        # Remove dl=0/dl=1 param — not needed on dropboxusercontent.com
-        url = re.sub(r'[?&]dl=[01]', lambda m: '' if m.group().startswith('?') else '', url)
-        # Remove trailing ? or & left behind
-        url = url.rstrip('?').rstrip('&')
-        return url
+        # Strip 'dl' and 'st' params — 'st' is a browser-session token that blocks server downloads
+        parsed = urlparse(url)
+        qs = {k: v for k, v in parse_qs(parsed.query, keep_blank_values=True).items()
+              if k not in ('dl', 'st')}
+        return urlunparse(parsed._replace(query=urlencode(qs, doseq=True)))
+
 
     # OneDrive share links: embed → download
     if '1drv.ms' in url or 'onedrive.live.com' in url:
