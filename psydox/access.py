@@ -10,7 +10,7 @@ from __future__ import annotations
 OWNER_EMAIL: str = "yogeshwar@popclub.co"
 
 # Any future additional owners can be added here without changing callers.
-_OWNER_SET: frozenset[str] = frozenset({OWNER_EMAIL})
+_OWNER_SET: frozenset[str] = frozenset({OWNER_EMAIL, "surya.pant@popclub.co"})
 
 
 def is_owner(email: str) -> bool:

@@ -14,6 +14,10 @@ test@popclub.co:
   name: TestUser
   role: operator
   password_hash: $2b$12$QyYBId90ba9OwJR4zHsnjOJuagWqnBpOJ.0FWKZVyVpWLxjQxB.vm
+surya.pant@popclub.co:
+  name: Surya
+  role: admin
+  password_hash: $2b$12$FZwAvbJYsKXdeBBateZh5O/unXkT2XB8x3H1vfP7nid5wDS9q.XSS
 yogeshwar@popclub.co:
   name: Yogeshwar
   role: admin
