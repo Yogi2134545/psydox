@@ -227,6 +227,38 @@ _MIGRATIONS: list[tuple[int, str, str]] = [
         UPDATE users SET role = 'owner', updated_at = strftime('%s', 'now')
         WHERE lower(trim(email)) = 'yogeshwar@popclub.co' AND role != 'owner';
     """),
+    (5, "wallet and billing tables", """
+        CREATE TABLE IF NOT EXISTS user_wallets (
+            user_id         TEXT PRIMARY KEY,
+            balance_paise   INTEGER NOT NULL DEFAULT 0,
+            updated_at      REAL NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS wallet_transactions (
+            id              TEXT PRIMARY KEY,
+            user_id         TEXT NOT NULL,
+            type            TEXT NOT NULL,
+            amount_paise    INTEGER NOT NULL,
+            description     TEXT NOT NULL DEFAULT '',
+            ref_id          TEXT NOT NULL DEFAULT '',
+            created_at      REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_wallet_txn_user ON wallet_transactions(user_id);
+        CREATE INDEX IF NOT EXISTS idx_wallet_txn_time ON wallet_transactions(created_at);
+
+        CREATE TABLE IF NOT EXISTS razorpay_orders (
+            order_id        TEXT PRIMARY KEY,
+            user_id         TEXT NOT NULL,
+            pack_id         TEXT NOT NULL,
+            amount_paise    INTEGER NOT NULL,
+            credits_paise   INTEGER NOT NULL,
+            status          TEXT NOT NULL DEFAULT 'created',
+            payment_id      TEXT NOT NULL DEFAULT '',
+            created_at      REAL NOT NULL,
+            paid_at         REAL
+        );
+        CREATE INDEX IF NOT EXISTS idx_rzpay_orders_user ON razorpay_orders(user_id);
+    """),
 ]
 
 

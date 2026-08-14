@@ -20,5 +20,5 @@ surya.pant@popclub.co:
   password_hash: $2b$12$FZwAvbJYsKXdeBBateZh5O/unXkT2XB8x3H1vfP7nid5wDS9q.XSS
 yogeshwar@popclub.co:
   name: Yogeshwar
-  role: admin
+  role: owner
   password_hash: $2b$12$QyYBId90ba9OwJR4zHsnjOJuagWqnBpOJ.0FWKZVyVpWLxjQxB.vm

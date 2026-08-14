@@ -22,6 +22,7 @@ def render_dashboard(
     on_new_project:    callable | None = None,
     on_batch:          callable | None = None,
     on_admin_users:    callable | None = None,
+    on_wallet:         callable | None = None,
 ) -> None:
     """Full Gen-Z dashboard."""
     # AI access is determined by the caller (app.py) via the on_ai_studio callback.
@@ -74,6 +75,9 @@ def render_dashboard(
                     on_ai_studio()
         if on_batch and st.button("📊 Batch Processing", use_container_width=True, key="sb_batch"):
             on_batch()
+
+        if on_wallet and st.button("💳 Wallet", use_container_width=True, key="sb_wallet"):
+            on_wallet()
 
         # Admin panel (owner only)
         if is_owner and on_admin_users:

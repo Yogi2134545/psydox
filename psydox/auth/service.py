@@ -395,8 +395,29 @@ class AuthService:
         user = self._repo.get_by_id(target_user_id)
         if not user:
             return AuthResult.fail("User not found.", "NOT_FOUND")
+
+        old_role = user.role
+
+        # Hard protection: owner role is permanent — never downgrade or transfer through normal flow.
+        if old_role == "owner":
+            return AuthResult.fail(
+                "The owner role is protected and cannot be changed.",
+                "FORBIDDEN",
+            )
+
+        # Hard protection: owner role cannot be granted through normal role management.
+        if new_role == "owner":
+            return AuthResult.fail(
+                "Owner role cannot be assigned through the role management interface.",
+                "FORBIDDEN",
+            )
+
         self._repo.update_role(target_user_id, new_role)
-        self._audit(admin_email, "admin_role_change", resource=user.email, detail=new_role)
+        self._audit(
+            admin_email, "admin_role_change",
+            resource=user.email,
+            detail=f"{old_role} → {new_role}",
+        )
         return AuthResult.ok(self._repo.get_by_id(target_user_id))
 
     def admin_set_status(self, target_user_id: str, status: AccountStatus, admin_email: str = "") -> AuthResult:

@@ -717,6 +717,32 @@ def _render_properties(user_email: str, is_owner_user: bool) -> None:
         st.error("AI tools are available to the owner account only.")
         return
 
+    # Billing gate — owner/admin bypass; other roles need wallet balance
+    if requires_ai:
+        _role = st.session_state.get("user_role", "viewer")
+        if _role not in ("owner", "admin"):
+            try:
+                from psydox.billing.service import get_billing_service
+                _uid = st.session_state.get("user_id", "")
+                if _uid:
+                    _bal = get_billing_service().get_balance(_uid)
+                    _bal_inr = _bal.balance_inr
+                    import os as _os
+                    _min_inr = float(_os.environ.get("BILLING_MIN_BALANCE_INR", "1"))
+                    if _bal_inr < _min_inr:
+                        st.warning(
+                            f"**💳 Wallet balance:** ₹{_bal_inr:.2f}  \n"
+                            f"A minimum of ₹{_min_inr:.2f} is required to use AI tools."
+                        )
+                        if st.button("Top Up Wallet →", key="billing_topup_from_studio",
+                                     use_container_width=True, type="primary"):
+                            st.session_state.psydox_nav = "wallet"
+                            st.rerun()
+                        return
+                    st.caption(f"💳 Wallet: ₹{_bal_inr:.2f}")
+            except Exception as _billing_err:
+                _log.warning("Billing gate check failed: %s", _billing_err)
+
     st.markdown(
         f'<div class="psx-props-header">{icon} {label.upper()}'
         + ('&nbsp;<span class="psx-ai-badge">AI</span>' if requires_ai else "")
@@ -1099,6 +1125,9 @@ def _props_ai_model(cur: bytes, user_email: str) -> None:
 
     st.session_state["ai_model_last_result"] = result
 
+    if result and result.get("success"):
+        _charge_wallet_for_ai("ai_model", result)
+
     if result and result.get("success") and result.get("outputs"):
         meta      = result.get("metadata", {})
         generated = meta.get("generated", len(result["outputs"]))
@@ -1257,6 +1286,9 @@ def _props_ai_angles(cur: bytes, user_email: str) -> None:
         )
 
     st.session_state["ai_angles_last_result"] = result
+
+    if result.get("success"):
+        _charge_wallet_for_ai("ai_angles", result)
 
     if result.get("success") and result.get("outputs"):
         meta = result.get("metadata", {})
@@ -1719,6 +1751,30 @@ def _props_jadu_ka_ghar(cur: bytes, user_email: str) -> None:
 
 # ── Generic apply button ──────────────────────────────────────────────────────
 
+def _charge_wallet_for_ai(tool_id: str, result: dict) -> None:
+    """Deduct cost from wallet after a successful AI generation (non-blocking)."""
+    try:
+        _role = st.session_state.get("user_role", "viewer")
+        _uid  = st.session_state.get("user_id", "")
+        if not _uid:
+            return
+        from psydox.billing.service import get_billing_service
+        bsvc = get_billing_service()
+        if not bsvc.should_charge(_role):
+            return
+        cost_usd = result.get("metadata", {}).get("cost_usd", 0.0)
+        charged = bsvc.charge_for_generation(
+            user_id=_uid,
+            tool_id=tool_id,
+            cost_usd=cost_usd or 0.0,
+            description=f"AI generation: {tool_id}",
+        )
+        if charged:
+            st.toast(f"💳 ₹{charged/100:.2f} deducted from wallet")
+    except Exception as _be:
+        _log.warning("Wallet deduction failed (non-fatal): %s", _be)
+
+
 def _apply_button(
     tool_id: str,
     cur: bytes,
@@ -1732,6 +1788,10 @@ def _apply_button(
                  use_container_width=True, type="primary", key=f"apply_{tool_id}"):
         with st.spinner(f"{'Generating...' if is_ai else 'Processing...'}"):
             result = _execute_tool(tool_id, inputs, user_email)
+
+        if result and result.get("success"):
+            if is_ai:
+                _charge_wallet_for_ai(tool_id, result)
 
         if result and result.get("success") and result.get("outputs"):
             if multi_output and len(result["outputs"]) > 1:

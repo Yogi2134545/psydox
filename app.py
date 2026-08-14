@@ -160,10 +160,15 @@ except Exception as _auth_err:
                 _users = yaml.safe_load(USERS_FILE.read_text()) if USERS_FILE.exists() else {}
                 _u = _users.get(_em.lower().strip())
                 if _u and _bcrypt.checkpw(_pw.encode(), _u["password_hash"].encode()):
+                    from psydox.access import OWNER_EMAIL as _OWNER_EMAIL
+                    _fallback_role = _u.get("role", "viewer")
+                    # Ensure the system owner always gets owner role even in fallback path
+                    if _em.lower().strip() == _OWNER_EMAIL.lower():
+                        _fallback_role = "owner"
                     st.session_state.logged_in  = True
                     st.session_state.user_name  = _u.get("name", _em)
                     st.session_state.user_email = _em.lower().strip()
-                    st.session_state.user_role  = _u.get("role", "viewer")
+                    st.session_state.user_role  = _fallback_role
                     st.rerun()
                 else:
                     st.error("Incorrect email or password.")
@@ -221,6 +226,29 @@ def _worker(job_id, cfg, out_dir):
         _flush_job(job_id)
 
 # ═════════════════════════════════════════════════════════════════════════════
+#  RAZORPAY PAYMENT RETURN — handle before any nav routing
+# ═════════════════════════════════════════════════════════════════════════════
+if st.query_params.get("rzpay") == "1":
+    _order_id   = st.query_params.get("order_id", "")
+    _payment_id = st.query_params.get("payment_id", "")
+    _signature  = st.query_params.get("sig", "")
+    if _order_id and _payment_id and _signature:
+        try:
+            from psydox.billing.service import get_billing_service
+            _bsvc = get_billing_service()
+            _ok = _bsvc.handle_payment_success(_order_id, _payment_id, _signature)
+            if _ok:
+                st.session_state["billing_success_msg"] = "Payment successful! Your wallet has been credited."
+            else:
+                st.session_state["billing_success_msg"] = "⚠️ Payment verification failed. Contact support."
+        except Exception as _pay_err:
+            _log.exception("Razorpay payment handling failed")
+            st.session_state["billing_success_msg"] = f"Payment error: {_pay_err}"
+    st.query_params.clear()
+    st.session_state.psydox_nav = "wallet"
+    st.rerun()
+
+# ═════════════════════════════════════════════════════════════════════════════
 #  NAV MODE
 # ═════════════════════════════════════════════════════════════════════════════
 if "psydox_nav" not in st.session_state:
@@ -274,6 +302,10 @@ if st.session_state.psydox_nav == "dashboard":
             st.session_state.psydox_nav = "admin_users"
             st.rerun()
 
+        def _go_wallet():
+            st.session_state.psydox_nav = "wallet"
+            st.rerun()
+
         render_dashboard(
             user_email=st.session_state.user_email,
             user_name=st.session_state.user_name,
@@ -283,6 +315,7 @@ if st.session_state.psydox_nav == "dashboard":
             on_new_project=_new_project,
             on_batch=_go_batch,
             on_admin_users=_go_admin_users if _user_is_owner else None,
+            on_wallet=_go_wallet,
         )
     except Exception as e:
         _log.exception("Dashboard render failed")
@@ -336,6 +369,22 @@ if st.session_state.psydox_nav == "new_project":
             st.rerun()
         except Exception as e:
             st.error(f"Could not create project: {e}")
+    st.stop()
+
+# ─── Wallet / Pricing view ───────────────────────────────────────────────────
+if st.session_state.psydox_nav == "wallet":
+    try:
+        from psydox.billing.ui import render_wallet_page
+
+        def _back_from_wallet():
+            st.session_state.psydox_nav = "dashboard"
+            st.rerun()
+
+        render_wallet_page(on_back=_back_from_wallet)
+    except Exception as e:
+        _log.exception("Wallet page error")
+        st.error(f"Wallet page error: {e}")
+        import traceback; st.code(traceback.format_exc())
     st.stop()
 
 # ─── Admin Users view ────────────────────────────────────────────────────────

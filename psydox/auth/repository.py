@@ -177,9 +177,13 @@ class UserRepository:
         self._db().commit()
 
     def update_role(self, user_id: str, role: str) -> None:
+        norm = _ROLE_NORMALISE.get(role.lower())
+        if norm is None:
+            _log.warning("update_role: unknown role %r — rejected", role)
+            return   # refuse unknown roles silently rather than silently downgrading
         self._db().execute(
             "UPDATE users SET role=?, updated_at=? WHERE id=?",
-            (_ROLE_NORMALISE.get(role.lower(), "viewer"), time.time(), user_id),
+            (norm, time.time(), user_id),
         )
         self._db().commit()
 
