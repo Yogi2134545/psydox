@@ -179,24 +179,30 @@ def render_admin_users_page(on_back=None) -> None:
                     else:
                         st.caption("🔒 Admin role — only the owner can modify admin accounts.")
                 else:
-                    # Show deferred success message from a previous save
-                    _msg_key = f"role_saved_msg_{uid}"
-                    if _msg_key in st.session_state:
-                        st.success(st.session_state.pop(_msg_key))
+                    _msg_key   = f"role_saved_msg_{uid}"
+                    _role_key  = f"role_{uid}"
+                    _reset_key = f"role_reset_{uid}"
 
-                    # Pre-init session state from DB — only on first render,
-                    # never overwrite a pending user selection on reruns.
-                    _role_key = f"role_{uid}"
+                    # Apply any pending reset BEFORE the widget is instantiated.
+                    # (Streamlit forbids writing session_state[key] after the
+                    # widget with that key has been rendered in the same run.)
+                    if _reset_key in st.session_state:
+                        st.session_state[_role_key] = st.session_state.pop(_reset_key)
+
+                    # First-render init — never overwrite a pending selection.
                     if _role_key not in st.session_state:
                         st.session_state[_role_key] = user.role
+
+                    # Show deferred success/error message.
+                    if _msg_key in st.session_state:
+                        st.success(st.session_state.pop(_msg_key))
 
                     new_role = st.selectbox(
                         "Change Role",
                         _assignable,
                         key=_role_key,
-                        # no index= — session state alone controls the value so
-                        # the click-rerun cannot reset it back to the DB value
-                        # before the save handler runs.
+                        # No index= — session state alone controls the value
+                        # so the click-rerun cannot reset it before save runs.
                     )
                     if new_role != user.role:
                         col_save, col_cancel = st.columns(2)
@@ -205,20 +211,20 @@ def render_admin_users_page(on_back=None) -> None:
                                          use_container_width=True, type="primary"):
                                 res = svc.admin_update_role(uid, new_role, admin_email)
                                 if res.success:
-                                    # Store message so it survives the rerun
-                                    st.session_state[_msg_key] = (
-                                        f"Role updated: {user.role} → {new_role}"
+                                    st.session_state[_msg_key]   = (
+                                        f"Role updated: {user.role} -> {new_role}"
                                     )
-                                    # Sync selectbox to new DB value so the
-                                    # button disappears immediately after save.
-                                    st.session_state[_role_key] = new_role
+                                    # Schedule the selectbox reset via the
+                                    # pending-reset key; applied next render
+                                    # BEFORE the widget is created.
+                                    st.session_state[_reset_key] = new_role
                                     st.rerun()
                                 else:
                                     st.error(res.error)
                         with col_cancel:
                             if st.button("Cancel", key=f"cancelrole_{uid}",
                                          use_container_width=True):
-                                st.session_state[_role_key] = user.role
+                                st.session_state[_reset_key] = user.role
                                 st.rerun()
 
                 # Suspend / Activate — only owner can suspend owners/admins
