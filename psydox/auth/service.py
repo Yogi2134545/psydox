@@ -49,7 +49,19 @@ class AuthService:
             self._repo.migrate_from_yaml()
         except Exception as exc:
             _log.warning("users.yaml migration failed (non-fatal): %s", exc)
+        self._ensure_system_owner()
         self._migrated = True
+
+    def _ensure_system_owner(self) -> None:
+        """Guarantee yogeshwar@popclub.co always has the 'owner' role in DB."""
+        from psydox.access import OWNER_EMAIL
+        try:
+            user = self._repo.get_by_email(OWNER_EMAIL)
+            if user and user.role != "owner":
+                self._repo.update_role(user.id, "owner")
+                _log.info("Promoted %s to owner role", OWNER_EMAIL)
+        except Exception as exc:
+            _log.warning("_ensure_system_owner failed (non-fatal): %s", exc)
 
     # ── Registration ──────────────────────────────────────────────────────────
 
