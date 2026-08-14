@@ -352,6 +352,7 @@ def run_batch(
     progress_cb: Optional[Callable[[int, int, str], None]] = None,
     raw_rows: Optional[dict] = None,
     headers: Optional[list] = None,
+    job_id: Optional[str] = None,
 ) -> BatchResult:
     """
     Download and process all images from the styles dict.
@@ -361,10 +362,16 @@ def run_batch(
     raw_rows / headers — when provided, a failed_images.xlsx is generated in
     failed_excel_bytes containing failed rows with their original input columns
     plus a Failure_Reason column.
+    job_id — when provided, per-URL progress is written to the job_items table.
     """
+    from psydox.batch.item_tracker import get_tracker, make_item_id
+    from psydox.batch.item_tracker import DOWNLOADING, PROCESSING, COMPLETED, FAILED
+
+    tracker        = get_tracker(job_id)
     result         = BatchResult(total=len(styles))
     zip_buf        = io.BytesIO()
     _failed: list  = []   # list of _FailedEntry
+    global_item_idx = 0   # sequential across all (style, url) pairs
 
     with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
         done = 0
@@ -374,7 +381,12 @@ def run_batch(
 
             style_success = 0
             for idx, url in enumerate(urls, start=1):
+                item_id = make_item_id(job_id or "nojob", style_code, idx)
+                tracker.create(item_id, url, style_code, global_item_idx)
+                global_item_idx += 1
+
                 try:
+                    tracker.update(item_id, DOWNLOADING)
                     img_bytes, dl_reason = _download_with_reason(url, timeout=cfg.timeout)
                     if not img_bytes:
                         reason = dl_reason or "Download failed"
@@ -386,9 +398,11 @@ def run_batch(
                             reason=reason,
                             raw_row=raw_rows.get(style_code) if raw_rows else None,
                         ))
+                        tracker.update(item_id, FAILED, error=reason)
                         continue
 
                     try:
+                        tracker.update(item_id, PROCESSING)
                         img = Image.open(io.BytesIO(img_bytes))
                         processed = convert_image(img, cfg)
                         jpeg_bytes = image_bytes_to_jpeg(processed, cfg.jpeg_quality)
@@ -402,12 +416,14 @@ def run_batch(
                             reason=reason,
                             raw_row=raw_rows.get(style_code) if raw_rows else None,
                         ))
+                        tracker.update(item_id, FAILED, error=reason)
                         continue
 
                     filename = f"{style_code}/{style_code}_{idx:02d}.jpg"
                     zf.writestr(filename, jpeg_bytes)
                     style_success += 1
                     result.success += 1
+                    tracker.update(item_id, COMPLETED, output_id=filename)
 
                 except Exception as exc:
                     reason = _safe_reason(exc)
@@ -419,6 +435,7 @@ def run_batch(
                         reason=reason,
                         raw_row=raw_rows.get(style_code) if raw_rows else None,
                     ))
+                    tracker.update(item_id, FAILED, error=reason)
 
             if style_success == 0:
                 result.skipped += 1
