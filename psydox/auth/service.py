@@ -103,10 +103,18 @@ class AuthService:
         )
 
         _append_registration_log(user)
-        self._send_verification(user)
+        raw_token = self._send_verification(user)
         self._audit(norm_email, "user_registered")
         _log.info("New user registered: %s", norm_email)
-        return AuthResult.ok(user)
+
+        # When no email service is configured, surface the link in the UI
+        # so users aren't stuck waiting for a mail that never arrives.
+        in_app = ""
+        if raw_token and _is_console_email():
+            from psydox.auth.email import _PSYDOX_BASE_URL
+            in_app = f"{_PSYDOX_BASE_URL.rstrip('/')}?verify={raw_token}"
+
+        return AuthResult.ok(user, in_app_link=in_app)
 
     # ── Login ─────────────────────────────────────────────────────────────────
 
@@ -216,13 +224,18 @@ class AuthService:
         _log.info("Email verified: %s", user.email)
         return AuthResult.ok(user)
 
-    def resend_verification(self, email: str) -> None:
-        """Resend verification email. Always returns (never reveals account existence)."""
+    def resend_verification(self, email: str) -> str:
+        """Resend verification email. Returns in-app link when console mode, else ''."""
         norm = normalize_email(email)
         user = self._repo.get_by_email(norm)
+        in_app = ""
         if user and not user.email_verified:
-            self._send_verification(user)
+            raw_token = self._send_verification(user)
+            if raw_token and _is_console_email():
+                from psydox.auth.email import _PSYDOX_BASE_URL
+                in_app = f"{_PSYDOX_BASE_URL.rstrip('/')}?verify={raw_token}"
         self._audit(norm, "verification_resend_requested")
+        return in_app
 
     # ── Password reset ────────────────────────────────────────────────────────
 
@@ -387,7 +400,8 @@ class AuthService:
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
-    def _send_verification(self, user: User) -> None:
+    def _send_verification(self, user: User) -> str | None:
+        """Send verification email. Returns raw token (for in-app link), or None on failure."""
         try:
             raw_token  = self._tok.generate()
             token_hash = self._tok.hash(raw_token)
@@ -397,8 +411,10 @@ class AuthService:
             svc = _get_email_service()
             svc.send_verification_email(user.email, user.full_name, raw_token)
             self._audit(user.email, "verification_email_sent")
+            return raw_token
         except Exception as exc:
             _log.error("verification email failed for %s: %s", user.email, exc)
+            return None
 
     def _check_rate_limit(self, email: str) -> bool:
         try:
@@ -422,6 +438,12 @@ class AuthService:
 def _get_email_service():
     from psydox.auth.email import get_email_service
     return get_email_service()
+
+
+def _is_console_email() -> bool:
+    """True when no real email service is configured (console/dev mode)."""
+    from psydox.auth.email import ConsoleEmailService
+    return isinstance(_get_email_service(), ConsoleEmailService)
 
 
 # ── Registration Excel log ────────────────────────────────────────────────────

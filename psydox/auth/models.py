@@ -65,15 +65,17 @@ class Session:
 
 @dataclass
 class AuthResult:
-    success:    bool
-    user:       Optional[User]    = None
-    session_id: Optional[str]     = None
-    error:      str               = ""
-    error_code: str               = ""    # machine-readable: INVALID_CREDENTIALS, UNVERIFIED, LOCKED, etc.
+    success:      bool
+    user:         Optional[User]  = None
+    session_id:   Optional[str]   = None
+    error:        str             = ""
+    error_code:   str             = ""    # INVALID_CREDENTIALS, UNVERIFIED, LOCKED, etc.
+    in_app_link:  Optional[str]   = None  # set when no email service — show link on screen
 
     @classmethod
-    def ok(cls, user: User, session_id: str = "") -> "AuthResult":
-        return cls(success=True, user=user, session_id=session_id)
+    def ok(cls, user: User, session_id: str = "", in_app_link: str = "") -> "AuthResult":
+        return cls(success=True, user=user, session_id=session_id,
+                   in_app_link=in_app_link or None)
 
     @classmethod
     def fail(cls, message: str, code: str = "") -> "AuthResult":

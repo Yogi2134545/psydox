@@ -156,8 +156,9 @@ def _page_login(svc: "AuthService") -> bool:
             elif result.error_code == "UNVERIFIED":
                 st.warning("Please verify your email address before signing in.")
                 if st.button("Resend verification email →", key="li_resend"):
-                    svc.resend_verification(email)
-                    st.session_state._reg_email = email
+                    link = svc.resend_verification(email)
+                    st.session_state._reg_email       = email
+                    st.session_state._reg_in_app_link = link
                     _set_state("verify_sent")
                     st.rerun()
             else:
@@ -193,7 +194,8 @@ def _page_register(svc: "AuthService") -> None:
     if ok:
         result = svc.register(name, email, pwd, pwd2, terms_accepted=terms)
         if result.success:
-            st.session_state._reg_email = email
+            st.session_state._reg_email       = email
+            st.session_state._reg_in_app_link = result.in_app_link or ""
             _set_state("verify_sent")
             st.rerun()
         else:
@@ -207,13 +209,39 @@ def _page_register(svc: "AuthService") -> None:
 
 def _page_verify_sent() -> None:
     _logo()
-    email = st.session_state.get("_reg_email", "your inbox")
-    st.success(
-        f"✅ Account created! A verification email has been sent to **{email}**.\n\n"
-        "Click the link in the email to activate your account, then come back here to sign in."
-    )
-    st.info("The link expires in 48 hours. Check your spam folder if it doesn't arrive.")
+    email        = st.session_state.get("_reg_email", "your inbox")
+    in_app_link  = st.session_state.get("_reg_in_app_link", "")
+
+    if in_app_link:
+        # No email service configured — show the link directly on screen
+        st.warning(
+            "⚠️ **Email delivery is not configured** — no verification email was sent.\n\n"
+            "Click the button below to verify your account right now:"
+        )
+        st.markdown(
+            f"""<div style="text-align:center;margin:24px 0">
+              <a href="{in_app_link}" target="_self"
+                 style="background:#ff6600;color:white;padding:14px 32px;
+                        text-decoration:none;border-radius:8px;font-weight:bold;
+                        font-size:16px;display:inline-block">
+                ✅ Verify My Account
+              </a>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            "To receive real emails, add **RESEND_API_KEY** in your Railway environment variables. "
+            "Sign up free at resend.com (100 emails/day)."
+        )
+    else:
+        st.success(
+            f"✅ Account created! A verification email has been sent to **{email}**.\n\n"
+            "Click the link in that email to activate your account."
+        )
+        st.info("The link expires in 48 hours. Check your spam folder if it doesn't arrive.")
+
     if st.button("← Back to Sign In", use_container_width=True, key="vs_back"):
+        st.session_state._reg_in_app_link = ""
         _set_state("login")
         st.rerun()
 

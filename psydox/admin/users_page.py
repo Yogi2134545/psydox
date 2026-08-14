@@ -192,5 +192,11 @@ def render_admin_users_page(on_back=None) -> None:
                 if not user.email_verified:
                     if st.button("📧 Resend Verification Email",
                                  key=f"resend_{uid}", use_container_width=True):
-                        svc.resend_verification(user.email)
-                        st.info(f"Verification email sent to {user.email}.")
+                        link = svc.resend_verification(user.email)
+                        if link:
+                            st.warning(
+                                "No email service configured — copy this link and send it manually:"
+                            )
+                            st.code(link, language=None)
+                        else:
+                            st.info(f"Verification email sent to {user.email}.")
