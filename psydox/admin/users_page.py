@@ -179,21 +179,47 @@ def render_admin_users_page(on_back=None) -> None:
                     else:
                         st.caption("🔒 Admin role — only the owner can modify admin accounts.")
                 else:
-                    cur_role_idx = _assignable.index(user.role) if user.role in _assignable else 0
+                    # Show deferred success message from a previous save
+                    _msg_key = f"role_saved_msg_{uid}"
+                    if _msg_key in st.session_state:
+                        st.success(st.session_state.pop(_msg_key))
+
+                    # Pre-init session state from DB — only on first render,
+                    # never overwrite a pending user selection on reruns.
+                    _role_key = f"role_{uid}"
+                    if _role_key not in st.session_state:
+                        st.session_state[_role_key] = user.role
+
                     new_role = st.selectbox(
                         "Change Role",
                         _assignable,
-                        index=cur_role_idx,
-                        key=f"role_{uid}",
+                        key=_role_key,
+                        # no index= — session state alone controls the value so
+                        # the click-rerun cannot reset it back to the DB value
+                        # before the save handler runs.
                     )
                     if new_role != user.role:
-                        if st.button("Save Role", key=f"saverole_{uid}", use_container_width=True):
-                            res = svc.admin_update_role(uid, new_role, admin_email)
-                            if res.success:
-                                st.success(f"Role updated to {new_role}.")
+                        col_save, col_cancel = st.columns(2)
+                        with col_save:
+                            if st.button("Save Role", key=f"saverole_{uid}",
+                                         use_container_width=True, type="primary"):
+                                res = svc.admin_update_role(uid, new_role, admin_email)
+                                if res.success:
+                                    # Store message so it survives the rerun
+                                    st.session_state[_msg_key] = (
+                                        f"Role updated: {user.role} → {new_role}"
+                                    )
+                                    # Sync selectbox to new DB value so the
+                                    # button disappears immediately after save.
+                                    st.session_state[_role_key] = new_role
+                                    st.rerun()
+                                else:
+                                    st.error(res.error)
+                        with col_cancel:
+                            if st.button("Cancel", key=f"cancelrole_{uid}",
+                                         use_container_width=True):
+                                st.session_state[_role_key] = user.role
                                 st.rerun()
-                            else:
-                                st.error(res.error)
 
                 # Suspend / Activate — only owner can suspend owners/admins
                 from psydox.auth.models import AccountStatus as _AS
