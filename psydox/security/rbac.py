@@ -135,9 +135,9 @@ class RBACService:
                     perm_str = feat.manifest.required_permission or "classic"
                     required = Permission(perm_str)
             except Exception:
-                return True  # fail open for unknown features
+                return False  # fail closed for unknown features
         if required is None:
-            return True
+            return False  # fail closed — no permission mapping found
         return self.can(role, required)
 
     def require(self, role: Role, permission: Permission) -> None:

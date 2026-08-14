@@ -22,6 +22,13 @@ _log = logging.getLogger("psydox.auth.service")
 _VERIFICATION_TTL = 48 * 3600
 _RESET_TTL        =  1 * 3600
 
+# All roles that can be assigned through the admin role-management interface.
+# "owner" is intentionally absent — it is a bootstrap-only role, never assignable via UI.
+_VALID_ROLES = frozenset({
+    "user", "viewer", "editor", "manager", "reviewer",
+    "creative", "operator", "catalog_operator", "admin",
+})
+
 
 class AuthService:
     """
@@ -318,10 +325,11 @@ class AuthService:
 
     def change_password(
         self,
-        user_id:          str,
-        current_password: str,
-        new_password:     str,
-        confirm_password: str,
+        user_id:            str,
+        current_password:   str,
+        new_password:       str,
+        confirm_password:   str,
+        current_session_id: str = "",
     ) -> AuthResult:
         user = self._repo.get_by_id(user_id)
         if not user:
@@ -338,6 +346,11 @@ class AuthService:
 
         new_hash = self._pw.hash(new_password)
         self._repo.update_password(user.id, new_hash)
+        # Revoke all other sessions so stolen tokens cannot be used after a password change.
+        if current_session_id:
+            self._sessions.revoke_others(user.id, current_session_id)
+        else:
+            self._sessions.revoke_all(user.id)
         self._audit(user.email, "password_changed")
         return AuthResult.ok(user)
 
@@ -383,6 +396,9 @@ class AuthService:
 
     def admin_verify_user(self, target_user_id: str, admin_email: str = "") -> AuthResult:
         """Manually verify a user's email. Owner/admin use only."""
+        guard = self._verify_admin_caller(admin_email)
+        if guard is not None:
+            return guard
         user = self._repo.get_by_id(target_user_id)
         if not user:
             return AuthResult.fail("User not found.", "NOT_FOUND")
@@ -392,23 +408,27 @@ class AuthService:
         return AuthResult.ok(user)
 
     def admin_update_role(self, target_user_id: str, new_role: str, admin_email: str = "") -> AuthResult:
+        guard = self._verify_admin_caller(admin_email)
+        if guard is not None:
+            return guard
+
+        # Validate the requested role before hitting the DB
+        if new_role not in _VALID_ROLES:
+            return AuthResult.fail(
+                f"'{new_role}' is not a valid assignable role.",
+                "VALIDATION_ERROR",
+            )
+
         user = self._repo.get_by_id(target_user_id)
         if not user:
             return AuthResult.fail("User not found.", "NOT_FOUND")
 
         old_role = user.role
 
-        # Hard protection: owner role is permanent — never downgrade or transfer through normal flow.
+        # Hard protection: owner role is permanent — cannot be changed.
         if old_role == "owner":
             return AuthResult.fail(
                 "The owner role is protected and cannot be changed.",
-                "FORBIDDEN",
-            )
-
-        # Hard protection: owner role cannot be granted through normal role management.
-        if new_role == "owner":
-            return AuthResult.fail(
-                "Owner role cannot be assigned through the role management interface.",
                 "FORBIDDEN",
             )
 
@@ -421,6 +441,9 @@ class AuthService:
         return AuthResult.ok(self._repo.get_by_id(target_user_id))
 
     def admin_set_status(self, target_user_id: str, status: AccountStatus, admin_email: str = "") -> AuthResult:
+        guard = self._verify_admin_caller(admin_email)
+        if guard is not None:
+            return guard
         user = self._repo.get_by_id(target_user_id)
         if not user:
             return AuthResult.fail("User not found.", "NOT_FOUND")
@@ -430,6 +453,20 @@ class AuthService:
 
     def admin_list_users(self) -> list:
         return self._repo.list_all()
+
+    # ── Internal helpers ──────────────────────────────────────────────────────
+
+    def _verify_admin_caller(self, admin_email: str) -> "AuthResult | None":
+        """Return None if the caller has owner/admin role; return AuthResult.fail() otherwise."""
+        if not admin_email:
+            return AuthResult.fail("Admin email is required for this operation.", "FORBIDDEN")
+        caller = self._repo.get_by_email(normalize_email(admin_email))
+        if caller and caller.role in ("owner", "admin") and caller.is_active():
+            return None
+        return AuthResult.fail(
+            "Caller does not have sufficient privileges (owner or admin required).",
+            "FORBIDDEN",
+        )
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
@@ -453,8 +490,9 @@ class AuthService:
         try:
             from psydox.security.ratelimit import get_rate_limiter
             return get_rate_limiter().check(email, "login")
-        except Exception:
-            return True  # fail open if rate limiter unavailable
+        except Exception as exc:
+            _log.warning("rate limiter unavailable — denying login request: %s", exc)
+            return False  # fail closed
 
     def _audit(self, email: str, action: str, resource: str = "", detail: str = "") -> None:
         try:
@@ -487,6 +525,7 @@ _reg_log_lock = _threading.Lock()
 def _append_registration_log(user: "User") -> None:
     """Append one row to user_registrations.xlsx next to the DB file.
     Thread-safe.  Non-fatal on any error.
+    Password hashes are NEVER written to the log.
     """
     try:
         import datetime, openpyxl
@@ -503,10 +542,8 @@ def _append_registration_log(user: "User") -> None:
                 ws = wb.active
                 ws.title = "Registrations"
                 ws.append([
-                    "Full Name", "Email", "Role", "Status",
-                    "Password Hash", "Registered At",
+                    "Full Name", "Email", "Role", "Status", "Registered At",
                 ])
-                # Header styling
                 from openpyxl.styles import Font, PatternFill
                 hdr_fill = PatternFill("solid", fgColor="FF6600")
                 hdr_font = Font(bold=True, color="FFFFFF")
@@ -523,7 +560,6 @@ def _append_registration_log(user: "User") -> None:
                 user.email,
                 user.role,
                 user.status.value,
-                user.password_hash,   # bcrypt hash — one-way, cannot be reversed
                 registered_at,
             ])
             wb.save(log_path)
@@ -544,7 +580,9 @@ def get_registration_log_excel() -> bytes | None:
 
 
 def get_all_users_excel() -> bytes:
-    """Generate a fresh Users Excel from the DB (always up-to-date)."""
+    """Generate a fresh Users Excel from the DB (always up-to-date).
+    Password hashes are NEVER included in exports.
+    """
     import io, datetime, openpyxl
     from psydox.auth.repository import get_user_repository
     from openpyxl.styles import Font, PatternFill
@@ -556,7 +594,7 @@ def get_all_users_excel() -> bytes:
     ws = wb.active
     ws.title = "Users"
     headers = ["Full Name", "Email", "Role", "Status", "Registered At",
-               "Last Login", "Email Verified", "Password Hash"]
+               "Last Login", "Email Verified"]
     ws.append(headers)
     hdr_fill = PatternFill("solid", fgColor="FF6600")
     hdr_font = Font(bold=True, color="FFFFFF")
@@ -577,7 +615,6 @@ def get_all_users_excel() -> bytes:
             _fmt(u.created_at),
             _fmt(u.last_login_at),
             "Yes" if u.email_verified else "No",
-            u.password_hash,
         ])
 
     # Auto-width columns

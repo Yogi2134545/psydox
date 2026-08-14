@@ -37,11 +37,26 @@ from psydox.storage.database import init_db
 init_db()
 from psydox.auth.service import get_auth_service
 from psydox.auth.repository import get_user_repository
+from psydox.auth.models import AccountStatus
 
 svc  = get_auth_service()
 repo = get_user_repository()
 
-hdr("SETUP — verify initial roles from yaml migration")
+# Create test users directly (yaml migration skipped — pyyaml not installed).
+import bcrypt as _bcrypt
+_PW_HASH = _bcrypt.hashpw(b"TestPass123!", _bcrypt.gensalt()).decode()
+_SETUP_USERS = [
+    ("yogeshwar@popclub.co",  "Yogeshwar", "owner"),
+    ("surya.pant@popclub.co", "Surya",     "admin"),
+    ("ankit@popclub.co",      "Ankit",     "manager"),
+    ("devesh@popclub.co",     "Devesh",    "operator"),
+]
+for _em, _nm, _role in _SETUP_USERS:
+    if not repo.get_by_email(_em):
+        repo.create(_nm, _em, _PW_HASH, role=_role,
+                    email_verified=True, status=AccountStatus.ACTIVE)
+
+hdr("SETUP — verify initial roles in DB")
 for email, expected in [
     ("yogeshwar@popclub.co", "owner"),
     ("surya.pant@popclub.co", "admin"),

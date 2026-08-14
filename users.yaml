@@ -1,24 +1,39 @@
+# Bootstrap user definitions — imported ONCE per fresh DB, then ignored.
+# SECURITY: password_hash values have been removed from this file.
+# Existing production DB users are unaffected (migration skips existing rows).
+# New deployments: set passwords via the admin panel or password-reset flow.
+# This file is excluded from git via .gitignore.
+#
+# IMPORTANT: If this file exists in git history with real hashes,
+# rotate ALL listed passwords immediately (BFG / git filter-branch needed
+# to purge the history — that must be done manually outside this codebase).
+
 ankit@popclub.co:
   name: Ankit
   role: manager
-  password_hash: $2b$12$qQkqVMI26e3/sWCNhvzTfesJUxCDJC1cYv9q5g5XoB6TRqv0CJZT2
+  password_hash: ""
+
 bhargavi.kt@popclub.co:
   name: Bhargavi
   role: operator
-  password_hash: $2b$12$1rUjU5V.DwT1h3NPgRHG/ejPZMygRSnGiAoPsEPzuiWthV.Nz7BTy
+  password_hash: ""
+
 devesh@popclub.co:
   name: Devesh
   role: operator
-  password_hash: $2b$12$sSylQNXMOaFTtP8dHxP71.2U6S3Jpxgi4phHfly224SN6n0Am.Ec2
+  password_hash: ""
+
 test@popclub.co:
   name: TestUser
   role: operator
-  password_hash: $2b$12$QyYBId90ba9OwJR4zHsnjOJuagWqnBpOJ.0FWKZVyVpWLxjQxB.vm
+  password_hash: ""
+
 surya.pant@popclub.co:
   name: Surya
   role: admin
-  password_hash: $2b$12$FZwAvbJYsKXdeBBateZh5O/unXkT2XB8x3H1vfP7nid5wDS9q.XSS
+  password_hash: ""
+
 yogeshwar@popclub.co:
   name: Yogeshwar
   role: owner
-  password_hash: $2b$12$QyYBId90ba9OwJR4zHsnjOJuagWqnBpOJ.0FWKZVyVpWLxjQxB.vm
+  password_hash: ""

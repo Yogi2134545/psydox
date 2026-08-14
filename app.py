@@ -139,40 +139,12 @@ try:
     if not render_auth_page(_auth_svc):
         st.stop()
 except Exception as _auth_err:
-    _log.exception("Auth system error — falling back to legacy login")
-    if not st.session_state.logged_in:
-        # Emergency legacy fallback so existing users are never locked out
-        _, col, _ = st.columns([1, 2, 1])
-        with col:
-            st.markdown("""
-            <div style='text-align:center;padding:40px 0 24px'>
-              <div style='font-size:56px'>⚡</div>
-              <h1 style='color:#ff6600;margin:0;letter-spacing:2px'>Psydox</h1>
-              <p style='color:#888;font-size:14px'>Image Processing Engine</p>
-            </div>""", unsafe_allow_html=True)
-            st.error(f"Auth system error: {_auth_err}")
-            import yaml, bcrypt as _bcrypt
-            with st.form("login_fallback"):
-                _em = st.text_input("Email", placeholder="you@company.com")
-                _pw = st.text_input("Password", type="password")
-                _ok = st.form_submit_button("Sign In →", use_container_width=True)
-            if _ok:
-                _users = yaml.safe_load(USERS_FILE.read_text()) if USERS_FILE.exists() else {}
-                _u = _users.get(_em.lower().strip())
-                if _u and _bcrypt.checkpw(_pw.encode(), _u["password_hash"].encode()):
-                    from psydox.access import OWNER_EMAIL as _OWNER_EMAIL
-                    _fallback_role = _u.get("role", "viewer")
-                    # Ensure the system owner always gets owner role even in fallback path
-                    if _em.lower().strip() == _OWNER_EMAIL.lower():
-                        _fallback_role = "owner"
-                    st.session_state.logged_in  = True
-                    st.session_state.user_name  = _u.get("name", _em)
-                    st.session_state.user_email = _em.lower().strip()
-                    st.session_state.user_role  = _fallback_role
-                    st.rerun()
-                else:
-                    st.error("Incorrect email or password.")
-        st.stop()
+    _log.exception("Auth system error")
+    st.error(
+        f"Authentication service unavailable: {_auth_err}\n\n"
+        "Please try refreshing. If the problem persists, contact your administrator."
+    )
+    st.stop()
 
 # ═════════════════════════════════════════════════════════════════════════════
 #  BACKGROUND WORKER

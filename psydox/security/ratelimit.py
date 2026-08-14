@@ -74,13 +74,16 @@ class RateLimiter:
         return int(bucket.tokens)
 
 
+_FALLBACK_STORE: dict = {}
+
+
 def _rl_store() -> dict:
     if _HAS_ST:
         @st.cache_resource
         def _store():
             return {}
         return _store()
-    return {}
+    return _FALLBACK_STORE
 
 
 def get_rate_limiter() -> RateLimiter:

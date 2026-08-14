@@ -73,6 +73,17 @@ class SessionService:
         self._db().commit()
         return cur.rowcount
 
+    def revoke_others(self, user_id: str, current_session_id: str) -> int:
+        """Revoke all sessions for user_id except current_session_id. Returns count."""
+        now = time.time()
+        cur = self._db().execute(
+            "UPDATE sessions SET revoked_at=? "
+            "WHERE user_id=? AND id != ? AND revoked_at IS NULL AND expires_at > ?",
+            (now, user_id, current_session_id, now),
+        )
+        self._db().commit()
+        return cur.rowcount
+
     def list_active(self, user_id: str) -> list[Session]:
         now = time.time()
         rows = self._db().execute(

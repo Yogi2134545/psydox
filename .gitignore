@@ -4,3 +4,21 @@ processed_images/
 processing.log
 .claude/
 *.log
+
+# Secrets / environment
+.env
+.env.*
+!.env.example
+
+# Database files — never commit live data
+*.db
+*.sqlite
+*.sqlite3
+
+# Runtime exports that may contain sensitive data
+user_registrations.xlsx
+validate_runtime_report.txt
+
+# users.yaml may contain bootstrap password hashes — exclude from git
+# (migration runs once per fresh DB; existing prod DB is unaffected)
+users.yaml

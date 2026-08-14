@@ -14,6 +14,10 @@ _log = logging.getLogger("psydox.billing.service")
 
 _BYPASS_ROLES = frozenset({"owner", "admin"})
 
+
+class InsufficientFundsError(Exception):
+    """Raised when a wallet deduction cannot proceed due to insufficient balance."""
+
 # Fallback cost per AI tool call in INR (used when cost_usd is not reported).
 # These represent the approximate API provider cost per image generation.
 _TOOL_FALLBACK_COST_INR: dict[str, float] = {
@@ -103,12 +107,23 @@ class BillingService:
         db = self._db()
         now = time.time()
         txn_id = str(uuid.uuid4())
+        # Ensure wallet row exists (creates with 0 balance if new user)
         db.execute(
             "INSERT INTO user_wallets (user_id, balance_paise, updated_at) VALUES (?, 0, ?) "
-            "ON CONFLICT(user_id) DO UPDATE SET "
-            "balance_paise = MAX(0, balance_paise - ?), updated_at = ?",
-            (user_id, now, amount_paise, now),
+            "ON CONFLICT(user_id) DO NOTHING",
+            (user_id, now),
         )
+        # Atomic deduct — only succeeds if current balance >= amount (no overdraft)
+        cur = db.execute(
+            "UPDATE user_wallets SET balance_paise = balance_paise - ?, updated_at = ? "
+            "WHERE user_id = ? AND balance_paise >= ?",
+            (amount_paise, now, user_id, amount_paise),
+        )
+        if cur.rowcount == 0:
+            db.rollback()
+            raise InsufficientFundsError(
+                f"Insufficient wallet balance: need {amount_paise} paise."
+            )
         db.execute(
             "INSERT INTO wallet_transactions (id, user_id, type, amount_paise, description, ref_id, created_at) "
             "VALUES (?, ?, 'debit', ?, ?, ?, ?)",
@@ -170,22 +185,35 @@ class BillingService:
             _log.info("Order %s already credited — idempotent no-op", order_id)
             return True
 
-        # Mark as paid
-        db.execute(
-            "UPDATE razorpay_orders SET status = 'paid', payment_id = ?, paid_at = ? WHERE order_id = ?",
-            (payment_id, time.time(), order_id),
+        now = time.time()
+        # Atomic: mark paid only if currently not paid (prevents double-credit race).
+        cur = db.execute(
+            "UPDATE razorpay_orders SET status = 'paid', payment_id = ?, paid_at = ? "
+            "WHERE order_id = ? AND status != 'paid'",
+            (payment_id, now, order_id),
         )
-        db.commit()
+        if cur.rowcount == 0:
+            _log.info("Order %s already credited by concurrent process — no-op", order_id)
+            return True
 
-        # Credit the wallet with bonus credits
+        # Credit the wallet in the same transaction (single commit covers both).
+        txn_id = str(uuid.uuid4())
         pack = next((p for p in RECHARGE_PACKS if p.id == row["pack_id"]), None)
         pack_name = pack.name if pack else row["pack_id"]
-        self._credit(
-            user_id=row["user_id"],
-            amount_paise=row["credits_paise"],
-            description=f"Wallet recharge — {pack_name} (payment {payment_id[:12]})",
-            ref_id=payment_id,
+        db.execute(
+            "INSERT INTO user_wallets (user_id, balance_paise, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET "
+            "balance_paise = balance_paise + excluded.balance_paise, updated_at = excluded.updated_at",
+            (row["user_id"], row["credits_paise"], now),
         )
+        db.execute(
+            "INSERT INTO wallet_transactions (id, user_id, type, amount_paise, description, ref_id, created_at) "
+            "VALUES (?, ?, 'credit', ?, ?, ?, ?)",
+            (txn_id, row["user_id"], row["credits_paise"],
+             f"Wallet recharge — {pack_name} (payment {payment_id[:12]})",
+             payment_id, now),
+        )
+        db.commit()
         _log.info(
             "Credited ₹%.2f to user %s (order %s, payment %s)",
             row["credits_paise"] / 100, row["user_id"], order_id, payment_id,
@@ -202,7 +230,9 @@ class BillingService:
         description: str = "",
         ref_id: str = "",
     ) -> int:
-        """Deduct the marked-up cost from the user's wallet. Returns paise charged (0 if error)."""
+        """Deduct the marked-up cost from the user's wallet. Returns paise charged.
+        Raises InsufficientFundsError when balance is too low — callers must handle this.
+        """
         try:
             amount_paise = compute_charge_paise(tool_id, cost_usd)
             self._deduct(
@@ -212,6 +242,8 @@ class BillingService:
                 ref_id=ref_id,
             )
             return amount_paise
+        except InsufficientFundsError:
+            raise  # propagate — generation must not proceed on empty wallet
         except Exception as exc:
             _log.warning("charge_for_generation failed: %s", exc)
             return 0

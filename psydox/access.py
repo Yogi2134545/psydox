@@ -47,5 +47,32 @@ def require_ai_permission(email: str) -> None:
 
 
 def require_owner(email: str) -> None:
-    """Alias kept for call-site compatibility — delegates to require_ai_permission."""
-    require_ai_permission(email)
+    """Raise PermissionError if the user does not have the 'owner' role."""
+    try:
+        from psydox.auth.service import get_auth_service
+        user = get_auth_service().get_user_by_email(email)
+        if user and user.role == "owner":
+            return
+    except Exception:
+        pass
+    if is_owner(email):
+        return
+    raise PermissionError(
+        f"This action requires the owner role. '{email}' does not have access."
+    )
+
+
+def require_admin(email: str) -> None:
+    """Raise PermissionError if the user lacks owner or admin role."""
+    try:
+        from psydox.auth.service import get_auth_service
+        user = get_auth_service().get_user_by_email(email)
+        if user and user.role in ("owner", "admin"):
+            return
+    except Exception:
+        pass
+    if is_owner(email):
+        return
+    raise PermissionError(
+        f"This action requires admin role or higher. '{email}' does not have access."
+    )
