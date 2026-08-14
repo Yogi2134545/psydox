@@ -520,7 +520,11 @@ def _render_excel_import() -> None:
                 status_text.caption(f"Last: {style}")
 
             with st.spinner("Running batch…"):
-                batch_result = run_batch(read_result.styles, cfg, progress_cb=_cb)
+                batch_result = run_batch(
+                    read_result.styles, cfg, progress_cb=_cb,
+                    raw_rows=read_result.raw_rows,
+                    headers=read_result.headers,
+                )
 
             progress_bar.empty()
             status_text.empty()
@@ -552,6 +556,16 @@ def _render_excel_import() -> None:
                 )
             elif batch_result.success == 0:
                 st.warning("No images were processed. Check that your URLs are publicly accessible.")
+
+            if batch_result.failed_excel_bytes:
+                st.download_button(
+                    f"⬇ Download Failed Excel ({batch_result.failed} records)",
+                    data=batch_result.failed_excel_bytes,
+                    file_name="failed_images.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    key="studio_bulk_failed_dl_btn",
+                )
 
 
 # ── Toolbar ───────────────────────────────────────────────────────────────────

@@ -81,8 +81,9 @@ class BatchResult:
     success: int = 0
     failed:  int = 0
     skipped: int = 0
-    zip_bytes: Optional[bytes] = None
-    errors: list[str] = field(default_factory=list)
+    zip_bytes:         Optional[bytes] = None
+    errors:            list[str]       = field(default_factory=list)
+    failed_excel_bytes: Optional[bytes] = None  # Excel of failed rows, None when 0 failures
 
 
 # ── Core image conversion (identical to process_images.convert_to_4_5) ───────
@@ -221,23 +222,151 @@ def image_bytes_to_jpeg(img: Image.Image, quality: int) -> bytes:
     return buf.getvalue()
 
 
+# ── Failure tracking helpers ──────────────────────────────────────────────────
+
+@dataclass
+class _FailedEntry:
+    style_code: str
+    url:        str
+    url_index:  int           # 1-based position among that style's URLs
+    reason:     str
+    raw_row:    Optional[tuple] = None  # full original Excel row (all columns)
+
+
+def _safe_reason(exc: Exception) -> str:
+    """Convert an exception to a short, user-safe string (no stack traces)."""
+    msg = str(exc)
+    if len(msg) > 200:
+        msg = msg[:200] + "…"
+    return msg
+
+
+_HTTP_REASONS: dict[int, str] = {
+    400: "HTTP 400 — Bad request",
+    401: "HTTP 401 — Unauthorized",
+    403: "HTTP 403 — Access forbidden",
+    404: "HTTP 404 — Image not found",
+    410: "HTTP 410 — Image permanently removed",
+    422: "HTTP 422 — Unprocessable URL",
+    429: "HTTP 429 — Too many requests (rate limited)",
+    500: "HTTP 500 — Server error",
+    502: "HTTP 502 — Bad gateway",
+    503: "HTTP 503 — Service unavailable",
+    504: "HTTP 504 — Gateway timeout",
+}
+
+_DL_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    ),
+    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+}
+
+
+def _download_with_reason(url: str, timeout: int) -> tuple:
+    """
+    Like download_image() but also returns the failure reason.
+    Returns (image_bytes, None) on success, (None, reason_str) on failure.
+    Provides specific HTTP error codes instead of a generic "Failed".
+    """
+    if not url or not url.strip():
+        return None, "Image URL is empty"
+
+    try:
+        import requests
+        from psydox.batch.excel_reader import resolve_url
+        from urllib.parse import urlparse as _up
+
+        direct = resolve_url(url)
+        try:
+            resp = requests.get(direct, headers=_DL_HEADERS, timeout=timeout, stream=True)
+        except requests.exceptions.Timeout:
+            return None, "Connection timeout"
+        except requests.exceptions.ConnectionError:
+            host = _up(url).netloc
+            return None, f"Network error — could not reach {host}"
+        except requests.exceptions.MissingSchema:
+            return None, "Invalid image URL"
+        except Exception as exc:
+            return None, f"Request error: {_safe_reason(exc)}"
+
+        if resp.status_code != 200:
+            return None, _HTTP_REASONS.get(
+                resp.status_code,
+                f"HTTP {resp.status_code} — Download failed",
+            )
+
+        if "text/html" in resp.headers.get("Content-Type", ""):
+            return None, "URL returns an HTML page, not an image (possible login wall)"
+
+        data = b"".join(resp.iter_content(65536))
+        if not data:
+            return None, "Downloaded file is empty"
+        return data, None
+
+    except Exception as exc:
+        return None, f"Download error: {_safe_reason(exc)}"
+
+
+def build_failed_excel(
+    failed_entries: list,
+    headers: list,
+    raw_rows: dict,
+) -> bytes:
+    """
+    Build an Excel file containing only the failed rows.
+
+    Columns = original input columns (from headers) + Failure_Reason (appended last).
+    Each entry in failed_entries produces one row, preserving original cell values.
+    """
+    try:
+        import openpyxl
+    except ImportError:
+        _log.error("openpyxl is required to build the failed-images Excel output")
+        return b""
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Failed Images"
+
+    n_headers = len(headers) if headers else 1
+    ws.append(list(headers) + ["Failure_Reason"])
+
+    for entry in failed_entries:
+        raw = raw_rows.get(entry.style_code) if raw_rows else None
+        row_vals = list(raw) if raw else []
+        # Pad / trim to exactly n_headers columns so Failure_Reason lands in the right column
+        while len(row_vals) < n_headers:
+            row_vals.append(None)
+        ws.append(row_vals[:n_headers] + [entry.reason])
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 # ── Bulk processor ────────────────────────────────────────────────────────────
 
 def run_batch(
     styles: dict[str, list[str]],
     cfg: BatchConfig,
     progress_cb: Optional[Callable[[int, int, str], None]] = None,
+    raw_rows: Optional[dict] = None,
+    headers: Optional[list] = None,
 ) -> BatchResult:
     """
     Download and process all images from the styles dict.
     Returns a BatchResult with a ZIP archive in zip_bytes.
 
     progress_cb(done, total, current_style) — called after each style.
+    raw_rows / headers — when provided, a failed_images.xlsx is generated in
+    failed_excel_bytes containing failed rows with their original input columns
+    plus a Failure_Reason column.
     """
-    from psydox.batch.excel_reader import download_image, resolve_url
-
-    result  = BatchResult(total=len(styles))
-    zip_buf = io.BytesIO()
+    result         = BatchResult(total=len(styles))
+    zip_buf        = io.BytesIO()
+    _failed: list  = []   # list of _FailedEntry
 
     with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
         done = 0
@@ -248,15 +377,34 @@ def run_batch(
             style_success = 0
             for idx, url in enumerate(urls, start=1):
                 try:
-                    img_bytes = download_image(url, timeout=cfg.timeout)
+                    img_bytes, dl_reason = _download_with_reason(url, timeout=cfg.timeout)
                     if not img_bytes:
-                        _log.warning("Failed to download %s (url #%d): %s", style_code, idx, url)
+                        reason = dl_reason or "Download failed"
+                        _log.warning("Failed to download %s (url #%d): %s — %s", style_code, idx, url, reason)
                         result.failed += 1
+                        result.errors.append(f"{style_code} #{idx}: {reason}")
+                        _failed.append(_FailedEntry(
+                            style_code=style_code, url=url, url_index=idx,
+                            reason=reason,
+                            raw_row=raw_rows.get(style_code) if raw_rows else None,
+                        ))
                         continue
 
-                    img = Image.open(io.BytesIO(img_bytes))
-                    processed = convert_image(img, cfg)
-                    jpeg_bytes = image_bytes_to_jpeg(processed, cfg.jpeg_quality)
+                    try:
+                        img = Image.open(io.BytesIO(img_bytes))
+                        processed = convert_image(img, cfg)
+                        jpeg_bytes = image_bytes_to_jpeg(processed, cfg.jpeg_quality)
+                    except Exception as conv_exc:
+                        reason = f"Invalid image content: {_safe_reason(conv_exc)}"
+                        _log.warning("Error converting %s url #%d: %s", style_code, idx, conv_exc)
+                        result.errors.append(f"{style_code} #{idx}: {conv_exc}")
+                        result.failed += 1
+                        _failed.append(_FailedEntry(
+                            style_code=style_code, url=url, url_index=idx,
+                            reason=reason,
+                            raw_row=raw_rows.get(style_code) if raw_rows else None,
+                        ))
+                        continue
 
                     filename = f"{style_code}/{style_code}_{idx:02d}.jpg"
                     zf.writestr(filename, jpeg_bytes)
@@ -264,9 +412,15 @@ def run_batch(
                     result.success += 1
 
                 except Exception as exc:
+                    reason = _safe_reason(exc)
                     _log.warning("Error processing %s url #%d: %s", style_code, idx, exc)
                     result.errors.append(f"{style_code} #{idx}: {exc}")
                     result.failed += 1
+                    _failed.append(_FailedEntry(
+                        style_code=style_code, url=url, url_index=idx,
+                        reason=reason,
+                        raw_row=raw_rows.get(style_code) if raw_rows else None,
+                    ))
 
             if style_success == 0:
                 result.skipped += 1
@@ -277,4 +431,8 @@ def run_batch(
 
     zip_buf.seek(0)
     result.zip_bytes = zip_buf.getvalue()
+
+    if _failed and raw_rows is not None:
+        result.failed_excel_bytes = build_failed_excel(_failed, headers or [], raw_rows)
+
     return result

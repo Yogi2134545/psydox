@@ -33,6 +33,11 @@ class ExcelReadResult:
     total_urls:   int
     warnings: list[str] = field(default_factory=list)
     errors:   list[str] = field(default_factory=list)
+    # Full original row (all columns) per style_code — first occurrence only.
+    # Used to preserve original input columns in the failed-images Excel output.
+    raw_rows: dict[str, tuple] = field(default_factory=dict)
+    # Column header names taken from the header row (or generated if no header detected).
+    headers:  list[str]        = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -63,11 +68,20 @@ def read_excel_bytes(data: bytes, max_styles: int = _MAX_STYLES) -> ExcelReadRes
     if not rows or len(rows[0]) < 2:
         return ExcelReadResult({}, 0, 0, errors=["Excel must have at least 2 columns: STYLE_CODE and one image URL column."])
 
-    styles: dict[str, list[str]] = {}
+    styles:   dict[str, list[str]] = {}
+    raw_rows: dict[str, tuple]     = {}
     warnings: list[str] = []
 
-    # Skip the first row if it looks like a header
+    # Skip the first row if it looks like a header; capture column names
     start = 1 if _looks_like_header(rows[0]) else 0
+    if start == 1:
+        headers: list[str] = [
+            str(c).strip() if c is not None else f"Column_{i + 1}"
+            for i, c in enumerate(rows[0])
+        ]
+    else:
+        n_cols = len(rows[0]) if rows else 2
+        headers = ["STYLE_CODE"] + [f"Image_URL_{i}" for i in range(1, n_cols)]
 
     for row in rows[start:]:
         if not row:
@@ -90,6 +104,10 @@ def read_excel_bytes(data: bytes, max_styles: int = _MAX_STYLES) -> ExcelReadRes
             warnings.append(f"Style '{code}': no valid URLs found, skipped.")
             continue
 
+        # Store original full row for the first occurrence of this style_code.
+        if code not in raw_rows:
+            raw_rows[code] = row
+
         if code in styles:
             # Merge duplicates
             for u in urls:
@@ -108,6 +126,8 @@ def read_excel_bytes(data: bytes, max_styles: int = _MAX_STYLES) -> ExcelReadRes
         total_styles=len(styles),
         total_urls=total_urls,
         warnings=warnings,
+        raw_rows=raw_rows,
+        headers=headers,
     )
 
 
