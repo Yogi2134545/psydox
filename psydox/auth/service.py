@@ -19,7 +19,8 @@ from psydox.auth.validation import normalize_email, validate_email, validate_nam
 
 _log = logging.getLogger("psydox.auth.service")
 
-_RESET_TTL = 1 * 3600   # 1 hour
+_VERIFICATION_TTL = 48 * 3600
+_RESET_TTL        =  1 * 3600
 
 
 class AuthService:
@@ -91,19 +92,18 @@ class AuthService:
 
         pw_hash = self._pw.hash(password)
         now = time.time()
-
-        # Accounts are always immediately active — no email verification step.
         user = self._repo.create(
             full_name=full_name.strip(),
             email=norm_email,
             password_hash=pw_hash,
             role="user",
-            email_verified=True,
-            status=AccountStatus.ACTIVE,
+            email_verified=False,
+            status=AccountStatus.PENDING_VERIFICATION,
             terms_accepted_at=now,
         )
 
         _append_registration_log(user)
+        self._send_verification(user)
         self._audit(norm_email, "user_registered")
         _log.info("New user registered: %s", norm_email)
         return AuthResult.ok(user)
@@ -156,6 +156,13 @@ class AuthService:
             self._repo.record_failed_login(user.id)
             self._audit(norm_email, "login_failed", detail="wrong password")
             return AuthResult.fail(_GENERIC, "INVALID_CREDENTIALS")
+
+        # Unverified — block login, let UI offer resend
+        if not user.email_verified or user.status == AccountStatus.PENDING_VERIFICATION:
+            return AuthResult.fail(
+                "Please verify your email before signing in.",
+                "UNVERIFIED",
+            )
 
         # Success
         session = self._sessions.create(user.id, remember_me=remember_me)
@@ -347,7 +354,51 @@ class AuthService:
         self._sessions.revoke(session_id)
         return True
 
+    # ── Admin operations (owner/admin role only — caller must enforce) ────────
+
+    def admin_verify_user(self, target_user_id: str, admin_email: str = "") -> AuthResult:
+        """Manually verify a user's email. Owner/admin use only."""
+        user = self._repo.get_by_id(target_user_id)
+        if not user:
+            return AuthResult.fail("User not found.", "NOT_FOUND")
+        self._repo.verify_email(target_user_id)
+        self._audit(admin_email, "admin_manual_verify", resource=user.email)
+        user = self._repo.get_by_id(target_user_id)
+        return AuthResult.ok(user)
+
+    def admin_update_role(self, target_user_id: str, new_role: str, admin_email: str = "") -> AuthResult:
+        user = self._repo.get_by_id(target_user_id)
+        if not user:
+            return AuthResult.fail("User not found.", "NOT_FOUND")
+        self._repo.update_role(target_user_id, new_role)
+        self._audit(admin_email, "admin_role_change", resource=user.email, detail=new_role)
+        return AuthResult.ok(self._repo.get_by_id(target_user_id))
+
+    def admin_set_status(self, target_user_id: str, status: AccountStatus, admin_email: str = "") -> AuthResult:
+        user = self._repo.get_by_id(target_user_id)
+        if not user:
+            return AuthResult.fail("User not found.", "NOT_FOUND")
+        self._repo.update_status(target_user_id, status)
+        self._audit(admin_email, f"admin_set_status_{status.value}", resource=user.email)
+        return AuthResult.ok(self._repo.get_by_id(target_user_id))
+
+    def admin_list_users(self) -> list:
+        return self._repo.list_all()
+
     # ── Internal ──────────────────────────────────────────────────────────────
+
+    def _send_verification(self, user: User) -> None:
+        try:
+            raw_token  = self._tok.generate()
+            token_hash = self._tok.hash(raw_token)
+            self._repo.set_verification_token(
+                user.id, token_hash, time.time() + _VERIFICATION_TTL
+            )
+            svc = _get_email_service()
+            svc.send_verification_email(user.email, user.full_name, raw_token)
+            self._audit(user.email, "verification_email_sent")
+        except Exception as exc:
+            _log.error("verification email failed for %s: %s", user.email, exc)
 
     def _check_rate_limit(self, email: str) -> bool:
         try:

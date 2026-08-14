@@ -15,13 +15,14 @@ from psydox.jobs.manager import get_job_manager
 
 
 def render_dashboard(
-    user_email:       str = "",
-    user_name:        str = "",
-    on_feature_select = None,
-    on_classic:       callable | None = None,
-    on_ai_studio:     callable | None = None,
-    on_new_project:   callable | None = None,
-    on_batch:         callable | None = None,
+    user_email:        str = "",
+    user_name:         str = "",
+    on_feature_select  = None,
+    on_classic:        callable | None = None,
+    on_ai_studio:      callable | None = None,
+    on_new_project:    callable | None = None,
+    on_batch:          callable | None = None,
+    on_admin_users:    callable | None = None,
 ) -> None:
     """Full Gen-Z dashboard."""
     is_owner = can_access_ai_studio(user_email)
@@ -73,23 +74,11 @@ def render_dashboard(
         if on_batch and st.button("📊 Batch Processing", use_container_width=True, key="sb_batch"):
             on_batch()
 
-        # Admin: download registered users as Excel
-        if is_owner:
+        # Admin panel (owner only)
+        if is_owner and on_admin_users:
             st.markdown("---")
-            st.markdown("**👥 Users**")
-            try:
-                from psydox.auth.service import get_all_users_excel
-                excel_bytes = get_all_users_excel()
-                st.download_button(
-                    "⬇ Download Users Excel",
-                    data=excel_bytes,
-                    file_name="psydox_users.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                    key="sb_users_dl",
-                )
-            except Exception as _e:
-                st.caption(f"Users export unavailable: {_e}")
+            if st.button("👥 Users & Admin", use_container_width=True, key="sb_admin_users"):
+                on_admin_users()
 
         if st.button("Sign Out", key="sb_signout", use_container_width=True):
             try:

@@ -157,7 +157,90 @@ class SMTPEmailService(EmailService):
             raise
 
 
+class ResendEmailService(EmailService):
+    """Resend.com transactional email — just an API key, no SMTP config.
+    Free tier: 100 emails/day.  Sign up at resend.com, copy API key to RESEND_API_KEY.
+    """
+
+    def __init__(self) -> None:
+        self.api_key  = os.environ.get("RESEND_API_KEY", "")
+        self.from_    = os.environ.get(
+            "RESEND_FROM",
+            os.environ.get("SMTP_FROM", "Psydox <onboarding@resend.dev>"),
+        )
+
+    def send_verification_email(self, email: str, name: str, token: str) -> None:
+        link  = self._verify_link(token)
+        first = name.split()[0] if name else "there"
+        html  = f"""
+<div style="font-family:sans-serif;max-width:480px;margin:0 auto">
+  <h2 style="color:#ff6600">⚡ Psydox</h2>
+  <p>Hi {first},</p>
+  <p>Click the button below to verify your email address and activate your Psydox account.</p>
+  <p style="text-align:center;margin:32px 0">
+    <a href="{link}" style="background:#ff6600;color:white;padding:14px 28px;
+       text-decoration:none;border-radius:8px;font-weight:bold">Verify Email</a>
+  </p>
+  <p style="color:#888;font-size:13px">
+    This link expires in 48 hours.<br>
+    If you didn't create a Psydox account, ignore this email.
+  </p>
+  <p style="color:#aaa;font-size:12px">Or copy: {link}</p>
+</div>"""
+        self._send(email, _VERIFY_SUBJECT, html)
+
+    def send_password_reset_email(self, email: str, name: str, token: str) -> None:
+        link  = self._reset_link(token)
+        first = name.split()[0] if name else "there"
+        html  = f"""
+<div style="font-family:sans-serif;max-width:480px;margin:0 auto">
+  <h2 style="color:#ff6600">⚡ Psydox</h2>
+  <p>Hi {first},</p>
+  <p>Click below to reset your Psydox password. This link expires in 1 hour.</p>
+  <p style="text-align:center;margin:32px 0">
+    <a href="{link}" style="background:#ff6600;color:white;padding:14px 28px;
+       text-decoration:none;border-radius:8px;font-weight:bold">Reset Password</a>
+  </p>
+  <p style="color:#888;font-size:13px">
+    If you didn't request a reset, ignore this email.
+  </p>
+  <p style="color:#aaa;font-size:12px">Or copy: {link}</p>
+</div>"""
+        self._send(email, _RESET_SUBJECT, html)
+
+    def _send(self, to: str, subject: str, html: str) -> None:
+        import json, urllib.request, urllib.error
+        payload = json.dumps({
+            "from":    self.from_,
+            "to":      [to],
+            "subject": subject,
+            "html":    html,
+        }).encode()
+        req = urllib.request.Request(
+            "https://api.resend.com/emails",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type":  "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                _log.info("Resend: sent '%s' to %s (status %s)", subject, to, resp.status)
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode(errors="replace")
+            _log.error("Resend HTTP %s sending to %s: %s", exc.code, to, body)
+            raise
+        except Exception as exc:
+            _log.error("Resend send failed to %s: %s", to, exc)
+            raise
+
+
 def get_email_service() -> EmailService:
+    """Priority: Resend (RESEND_API_KEY) > SMTP (SMTP_HOST) > Console (dev)."""
+    if os.environ.get("RESEND_API_KEY"):
+        return ResendEmailService()
     if os.environ.get("SMTP_HOST"):
         return SMTPEmailService()
     return ConsoleEmailService()

@@ -223,7 +223,11 @@ if "psydox_nav" not in st.session_state:
     st.session_state.psydox_nav = "dashboard"
 
 from psydox.access import can_access_ai_studio as _can_ai, require_owner as _require_owner
-_user_is_owner = _can_ai(st.session_state.get("user_email", ""))
+# Owner = hardcoded email set OR RBAC role owner/admin (supports new DB-registered admins)
+_user_is_owner = (
+    _can_ai(st.session_state.get("user_email", ""))
+    or st.session_state.get("user_role", "") in ("owner", "admin")
+)
 
 # ─── Dashboard view ──────────────────────────────────────────────────────────
 if st.session_state.psydox_nav == "dashboard":
@@ -258,6 +262,13 @@ if st.session_state.psydox_nav == "dashboard":
             st.session_state.psydox_nav = "batch"
             st.rerun()
 
+        def _go_admin_users():
+            if not _user_is_owner:
+                st.error("Admin access requires owner or admin role.")
+                return
+            st.session_state.psydox_nav = "admin_users"
+            st.rerun()
+
         render_dashboard(
             user_email=st.session_state.user_email,
             user_name=st.session_state.user_name,
@@ -266,6 +277,7 @@ if st.session_state.psydox_nav == "dashboard":
             on_ai_studio=_go_ai if _user_is_owner else None,
             on_new_project=_new_project,
             on_batch=_go_batch,
+            on_admin_users=_go_admin_users if _user_is_owner else None,
         )
     except Exception as e:
         _log.exception("Dashboard render failed")
@@ -320,6 +332,23 @@ if st.session_state.psydox_nav == "new_project":
         except Exception as e:
             st.error(f"Could not create project: {e}")
     st.stop()
+
+# ─── Admin Users view ────────────────────────────────────────────────────────
+if st.session_state.psydox_nav == "admin_users":
+    if not _user_is_owner:
+        st.error("Access denied — admin only.")
+        st.session_state.psydox_nav = "dashboard"
+        st.rerun()
+    else:
+        try:
+            from psydox.admin.users_page import render_admin_users_page
+            render_admin_users_page(on_back=lambda: (
+                setattr(st.session_state, "psydox_nav", "dashboard") or st.rerun()
+            ))
+        except Exception as e:
+            _log.exception("Admin users page error")
+            st.error(f"Admin page error: {e}")
+        st.stop()
 
 # ─── Batch processing view (old classic Excel processor) ─────────────────────
 # All nav states OTHER than "dashboard", "studio", "new_project" fall through

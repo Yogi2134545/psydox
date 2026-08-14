@@ -153,6 +153,13 @@ def _page_login(svc: "AuthService") -> bool:
                 _success_login(result, svc)
                 st.rerun()
                 return True
+            elif result.error_code == "UNVERIFIED":
+                st.warning("Please verify your email address before signing in.")
+                if st.button("Resend verification email →", key="li_resend"):
+                    svc.resend_verification(email)
+                    st.session_state._reg_email = email
+                    _set_state("verify_sent")
+                    st.rerun()
             else:
                 st.error(result.error or "Sign in failed.")
 
@@ -186,9 +193,8 @@ def _page_register(svc: "AuthService") -> None:
     if ok:
         result = svc.register(name, email, pwd, pwd2, terms_accepted=terms)
         if result.success:
-            # Account is immediately active — go straight to login
-            st.session_state._reg_success_email = email
-            _set_state("login")
+            st.session_state._reg_email = email
+            _set_state("verify_sent")
             st.rerun()
         else:
             st.error(result.error or "Registration failed.")
