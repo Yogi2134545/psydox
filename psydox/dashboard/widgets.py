@@ -208,6 +208,78 @@ def render_ai_usage(user_email: str = "") -> None:
         st.caption("AI usage tracking unavailable")
 
 
+# ── Observability widgets (Phase J) ──────────────────────────────────────────
+
+def render_batch_metrics(days: int = 7) -> None:
+    """Batch throughput and failure stats from job_items table."""
+    st.markdown("### ⚙️ Batch Metrics")
+    try:
+        from psydox.admin.analytics import AnalyticsService
+        data = AnalyticsService().batch_summary(days=days)
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Items ({}d)".format(days), data["total_items"])
+        c2.metric("✅ Completed",  data["completed"])
+        c3.metric("❌ Failed",     data["failed"])
+        c4.metric("Pass rate",     f"{data['pass_rate']*100:.0f}%")
+
+        if data["top_errors"]:
+            with st.expander("Top failure reasons"):
+                for e in data["top_errors"][:5]:
+                    st.caption(f"×{e['count']}  {e['error'][:120]}")
+    except Exception:
+        st.caption("Batch metrics unavailable")
+
+
+def render_quality_overview(days: int = 7) -> None:
+    """Quality score distribution from quality_results table."""
+    st.markdown("### 🎯 Quality Overview")
+    try:
+        from psydox.admin.analytics import AnalyticsService
+        data = AnalyticsService().quality_summary(days=days)
+        if data["total"] == 0:
+            st.caption("No quality data in the last {} days.".format(days))
+            return
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Checks ({}d)".format(days), data["total"])
+        c2.metric("Avg score",  f"{data['avg_score']:.0f}/100")
+        c3.metric("Pass rate",  f"{data['pass_rate']*100:.0f}%")
+
+        by_v = data.get("by_verdict", {})
+        approved   = by_v.get("APPROVED",  0)
+        review     = by_v.get("REVIEW",    0)
+        needs_fix  = by_v.get("NEEDS_FIX", 0)
+        st.caption(
+            f"✅ Approved: {approved}  |  "
+            f"👁️ Review: {review}  |  "
+            f"🔧 Needs Fix: {needs_fix}"
+        )
+    except Exception:
+        st.caption("Quality overview unavailable")
+
+
+def render_ai_cost_breakdown(days: int = 30) -> None:
+    """AI usage cost broken down by feature and provider."""
+    st.markdown("### 💰 AI Usage & Cost")
+    try:
+        from psydox.admin.analytics import AnalyticsService
+        data = AnalyticsService().ai_usage_summary(days=days)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Requests ({}d)".format(days), data["total_requests"])
+        c2.metric("Total cost",   f"${data['total_cost']:.3f}")
+        c3.metric("Avg latency",  f"{data['avg_latency_ms']}ms")
+
+        if data["by_feature"]:
+            with st.expander("By feature"):
+                for row in data["by_feature"][:8]:
+                    st.caption(f"{row['key']}: {row['requests']} requests  |  ${row['cost_usd']:.3f}")
+        if data["by_provider"]:
+            with st.expander("By provider"):
+                for row in data["by_provider"][:5]:
+                    st.caption(f"{row['key']}: {row['requests']} requests  |  ${row['cost_usd']:.3f}")
+    except Exception:
+        st.caption("AI cost data unavailable")
+
+
 # ── Widget registry ───────────────────────────────────────────────────────────
 # (widget_id, render_fn, label, default_visible)
 # New widgets: add an entry here — dashboard discovers them automatically.
@@ -219,6 +291,9 @@ WIDGET_REGISTRY: list[tuple[str, callable, str, bool]] = [
     ("recent_jobs",      render_recent_jobs,        "Recent Jobs",   True),
     ("recent_projects",  render_recent_projects,    "Projects",      True),
     ("ai_usage",         render_ai_usage,           "AI Usage",      False),
+    ("batch_metrics",    render_batch_metrics,      "Batch Metrics", False),
+    ("quality_overview", render_quality_overview,   "Quality",       False),
+    ("ai_cost",          render_ai_cost_breakdown,  "AI Cost",       False),
 ]
 
 
