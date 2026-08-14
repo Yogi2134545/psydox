@@ -46,6 +46,8 @@ def execute_tool(tool_id: str, inputs: dict, user_email: str) -> dict:
         if tool_id == "jadu_ka_ghar":
             require_owner(user_email)
             return _exec_jadu_ka_ghar(inputs)
+        if tool_id == "masking":
+            return _exec_masking(inputs)
         return {"success": False, "errors": [f"Unknown tool: {tool_id}"], "outputs": [], "metadata": {}}
     except PermissionError as e:
         return {"success": False, "errors": [str(e)], "outputs": [], "metadata": {}}
@@ -243,6 +245,12 @@ def _exec_jadu_ka_ghar(inputs: dict) -> dict:
     from jadu_ka_ghar.engine import IdeogramEngine
     clean = {k: v for k, v in inputs.items() if not k.startswith("_")}
     return IdeogramEngine().run(clean)
+
+
+def _exec_masking(inputs: dict) -> dict:
+    clean = {k: v for k, v in inputs.items() if not k.startswith("_")}
+    from psydox.masking.service import MaskingFeature
+    return MaskingFeature().execute(clean, {})
 
 
 def _build_context(inputs: dict) -> dict:

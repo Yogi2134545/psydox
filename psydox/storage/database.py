@@ -167,6 +167,24 @@ _MIGRATIONS: list[tuple[int, str, str]] = [
         CREATE INDEX IF NOT EXISTS idx_audit_user    ON audit_logs(user_email);
         CREATE INDEX IF NOT EXISTS idx_audit_time    ON audit_logs(created_at);
     """),
+    (2, "job items per-item tracking", """
+        CREATE TABLE IF NOT EXISTS job_items (
+            id          TEXT PRIMARY KEY,
+            job_id      TEXT NOT NULL,
+            source_url  TEXT NOT NULL DEFAULT '',
+            product_sku TEXT NOT NULL DEFAULT '',
+            row_index   INTEGER NOT NULL DEFAULT 0,
+            status      TEXT NOT NULL DEFAULT 'pending',
+            error       TEXT NOT NULL DEFAULT '',
+            output_id   TEXT NOT NULL DEFAULT '',
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            created_at  REAL NOT NULL,
+            updated_at  REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_job_items_job    ON job_items(job_id);
+        CREATE INDEX IF NOT EXISTS idx_job_items_status ON job_items(status);
+        CREATE INDEX IF NOT EXISTS idx_job_items_sku    ON job_items(product_sku);
+    """),
 ]
 
 

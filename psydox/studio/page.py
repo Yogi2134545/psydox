@@ -102,6 +102,7 @@ _CLASSIC_TOOLS = [
     ("resize",      "📐", "Resize",      False),
     ("crop",        "✂️",  "Crop",        False),
     ("enhance",     "✨", "Enhance",     False),
+    ("masking",     "🎭", "Masking",     False),
     ("packshot",    "📦", "Packshot",    False),
     ("marketplace", "🛒", "Marketplace", False),
 ]
@@ -731,6 +732,7 @@ def _render_properties(user_email: str, is_owner_user: bool) -> None:
         "resize":        _props_resize,
         "crop":          _props_crop,
         "enhance":       _props_enhance,
+        "masking":       _props_masking,
         "packshot":      _props_packshot,
         "marketplace":   _props_marketplace,
         "ai_background": _props_ai_background,
@@ -881,6 +883,50 @@ def _props_enhance(cur: bytes, user_email: str) -> None:
             label = "Enhance: " + (", ".join(changed) if changed else "no change")
             _push_history(result, label)
             st.rerun()
+
+
+def _props_masking(cur: bytes, user_email: str) -> None:
+    from psydox.masking.engine import _rembg_ok, _cv2_ok
+
+    if _rembg_ok:
+        engine_note = "rembg (AI segmentation)"
+    elif _cv2_ok:
+        engine_note = "OpenCV edge-detection"
+    else:
+        engine_note = "basic (no cv2/rembg)"
+    st.caption(f"Engine: {engine_note}")
+
+    MODE_LABELS = {
+        "Remove BG (transparent PNG)": "transparent",
+        "Replace BG — White":          "white_bg",
+        "Replace BG — Custom colour":  "custom_bg",
+        "Detect bounding box":         "detect",
+    }
+    mode_label = st.selectbox("Mode", list(MODE_LABELS.keys()), key="mask_mode")
+    mode       = MODE_LABELS[mode_label]
+
+    inputs: dict = {"image_bytes": cur, "mode": mode}
+
+    if mode == "custom_bg":
+        hex_val = st.text_input("Background HEX", value="#ffffff",
+                                placeholder="#rrggbb", key="mask_hex").strip()
+        try:
+            h = hex_val.lstrip("#")
+            if len(h) == 3:
+                h = h[0]*2 + h[1]*2 + h[2]*2
+            if len(h) == 6:
+                inputs["bg_rgb"] = tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+            else:
+                st.warning("Invalid HEX — using white.")
+                inputs["bg_rgb"] = (255, 255, 255)
+        except Exception:
+            st.warning("Invalid HEX — using white.")
+            inputs["bg_rgb"] = (255, 255, 255)
+
+    if mode == "transparent":
+        st.info("Output will be a PNG with a transparent background.")
+
+    _apply_button("masking", cur, mode_label, inputs=inputs)
 
 
 def _props_packshot(cur: bytes, user_email: str) -> None:
