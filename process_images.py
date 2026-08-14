@@ -646,9 +646,10 @@ def convert_to_4_5(img: Image.Image, cfg: dict) -> Image.Image:
         canvas_arr[py:py+nh, px:px+nw] = np.array(scaled, dtype=np.uint8)
         return Image.fromarray(canvas_arr)
 
-    # Auto / legacy: FIT then extend edge pixels into the empty strips.
-    # Each strip row/column gets the averaged colour from the adjacent image edge,
-    # so gradient/styled backgrounds extend naturally with no visible seam.
+    # Auto / legacy: FIT then fill the empty strips.
+    # Left/right strips extend edge columns (per-row average) for natural blending.
+    # Top/bottom strips use the detected background colour (original_bg) to avoid
+    # vertical artefacts when product pixels reach the top/bottom image edge.
     scaled = img.resize((nw, nh), Image.LANCZOS)
     sc     = np.array(scaled, dtype=np.uint8)
     px     = (TW - nw) // 2
@@ -671,15 +672,17 @@ def convert_to_4_5(img: Image.Image, cfg: dict) -> Image.Image:
         if px_r > 0:
             canvas_arr[py:py + nh, px + nw:]  = np.tile(r_edge, (1, px_r, 1))
 
-    # Top / bottom strips — extend edge rows, one column at a time
+    # Top / bottom strips — fill with the detected background colour.
+    # Per-column edge averaging caused vertical artefacts when product pixels
+    # reach the top/bottom edge of the source image (e.g. a stand or pole at a
+    # specific x-position gets averaged into the strip and tiled 100+ px tall).
+    # original_bg is the median of all four edge strips of the original image,
+    # giving a robust background colour even when a few edge pixels are product.
     if py > 0 or py_b > 0:
-        _eh  = min(8, nh)
-        t_edge = sc[:_eh, :, :].mean(axis=0, keepdims=True).astype(np.uint8)       # (1,nw,3)
-        b_edge = sc[max(0, nh - _eh):, :, :].mean(axis=0, keepdims=True).astype(np.uint8)
         if py > 0:
-            canvas_arr[:py, px:px + nw]       = np.tile(t_edge, (py,   1, 1))
+            canvas_arr[:py, px:px + nw]       = original_bg
         if py_b > 0:
-            canvas_arr[py + nh:, px:px + nw]  = np.tile(b_edge, (py_b, 1, 1))
+            canvas_arr[py + nh:, px:px + nw]  = original_bg
 
     # Place scaled image in centre
     canvas_arr[py:py + nh, px:px + nw] = sc

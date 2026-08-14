@@ -203,14 +203,12 @@ def convert_image(img: Image.Image, cfg: BatchConfig) -> Image.Image:
         if px_r > 0:
             canvas_arr[py:py + nh, px + nw:] = _np.tile(r_edge, (1, px_r, 1))
 
+    # Top / bottom strips — use detected background colour (same fix as process_images.py).
     if py > 0 or py_b > 0:
-        _eh  = min(8, nh)
-        t_edge = sc[:_eh, :, :].mean(axis=0, keepdims=True).astype(_np.uint8)
-        b_edge = sc[max(0, nh - _eh):, :, :].mean(axis=0, keepdims=True).astype(_np.uint8)
         if py > 0:
-            canvas_arr[:py, px:px + nw]      = _np.tile(t_edge, (py,   1, 1))
+            canvas_arr[:py, px:px + nw]      = original_bg
         if py_b > 0:
-            canvas_arr[py + nh:, px:px + nw] = _np.tile(b_edge, (py_b, 1, 1))
+            canvas_arr[py + nh:, px:px + nw] = original_bg
 
     canvas_arr[py:py + nh, px:px + nw] = sc
     return Image.fromarray(canvas_arr)
