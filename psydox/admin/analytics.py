@@ -43,7 +43,7 @@ class AnalyticsService:
         """
         since = time.time() - days * 86400
         try:
-            from psydox.storage.database import get_connection
+            from psydox.storage.database import get_db as get_connection
             db = get_connection()
 
             # Status breakdown
@@ -98,7 +98,7 @@ class AnalyticsService:
         """
         since = time.time() - days * 86400
         try:
-            from psydox.storage.database import get_connection
+            from psydox.storage.database import get_db as get_connection
             db = get_connection()
             rows = db.execute(
                 """
@@ -132,7 +132,7 @@ class AnalyticsService:
         """
         since = time.time() - days * 86400
         try:
-            from psydox.storage.database import get_connection
+            from psydox.storage.database import get_db as get_connection
             db = get_connection()
 
             agg = db.execute(
@@ -199,7 +199,7 @@ class AnalyticsService:
         """
         since = time.time() - days * 86400
         try:
-            from psydox.storage.database import get_connection
+            from psydox.storage.database import get_db as get_connection
             db = get_connection()
 
             agg = db.execute(
@@ -250,7 +250,7 @@ class AnalyticsService:
         """
         since = time.time() - days * 86400
         try:
-            from psydox.storage.database import get_connection
+            from psydox.storage.database import get_db as get_connection
             db = get_connection()
 
             status_rows = db.execute(

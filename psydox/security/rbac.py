@@ -29,11 +29,16 @@ _log = logging.getLogger("psydox.security.rbac")
 
 
 class Role(str, Enum):
-    OWNER   = "owner"
-    ADMIN   = "admin"
-    MANAGER = "manager"
-    EDITOR  = "editor"
-    VIEWER  = "viewer"
+    OWNER            = "owner"
+    ADMIN            = "admin"
+    MANAGER          = "manager"
+    EDITOR           = "editor"
+    VIEWER           = "viewer"
+    OPERATOR         = "operator"          # maps users.yaml "operator" role
+    CATALOG_OPERATOR = "catalog_operator"
+    CREATIVE         = "creative"
+    REVIEWER         = "reviewer"
+    USER             = "user"              # default for self-registered accounts
 
 
 class Permission(str, Enum):
@@ -61,6 +66,23 @@ _MATRIX: dict[Role, set[Permission]] = {
         Permission.DOWNLOAD,
     },
     Role.VIEWER: {
+        Permission.DOWNLOAD,
+    },
+    Role.OPERATOR: {
+        Permission.UPLOAD, Permission.CLASSIC, Permission.BATCH,
+        Permission.DOWNLOAD,
+    },
+    Role.CATALOG_OPERATOR: {
+        Permission.UPLOAD, Permission.CLASSIC, Permission.DOWNLOAD,
+    },
+    Role.CREATIVE: {
+        Permission.UPLOAD, Permission.CLASSIC, Permission.AI,
+        Permission.DOWNLOAD,
+    },
+    Role.REVIEWER: {
+        Permission.REVIEW, Permission.DOWNLOAD, Permission.ANALYTICS,
+    },
+    Role.USER: {
         Permission.DOWNLOAD,
     },
 }

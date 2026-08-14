@@ -185,6 +185,44 @@ _MIGRATIONS: list[tuple[int, str, str]] = [
         CREATE INDEX IF NOT EXISTS idx_job_items_status ON job_items(status);
         CREATE INDEX IF NOT EXISTS idx_job_items_sku    ON job_items(product_sku);
     """),
+    (3, "user accounts and sessions", """
+        CREATE TABLE IF NOT EXISTS users (
+            id                      TEXT PRIMARY KEY,
+            full_name               TEXT NOT NULL DEFAULT '',
+            email                   TEXT NOT NULL,
+            password_hash           TEXT NOT NULL,
+            email_verified          INTEGER NOT NULL DEFAULT 0,
+            verification_token_hash TEXT,
+            verification_expires_at REAL,
+            verified_at             REAL,
+            reset_token_hash        TEXT,
+            reset_expires_at        REAL,
+            status                  TEXT NOT NULL DEFAULT 'pending_verification',
+            role                    TEXT NOT NULL DEFAULT 'viewer',
+            created_at              REAL NOT NULL,
+            updated_at              REAL NOT NULL,
+            last_login_at           REAL,
+            terms_accepted_at       REAL,
+            failed_login_attempts   INTEGER NOT NULL DEFAULT 0,
+            locked_until            REAL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email   ON users(email);
+        CREATE INDEX        IF NOT EXISTS idx_users_status  ON users(status);
+        CREATE INDEX        IF NOT EXISTS idx_users_role    ON users(role);
+
+        CREATE TABLE IF NOT EXISTS sessions (
+            id               TEXT PRIMARY KEY,
+            user_id          TEXT NOT NULL,
+            created_at       REAL NOT NULL,
+            expires_at       REAL NOT NULL,
+            last_activity_at REAL NOT NULL,
+            revoked_at       REAL,
+            user_agent       TEXT NOT NULL DEFAULT '',
+            remember_me      INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_sessions_user    ON sessions(user_id);
+        CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+    """),
 ]
 
 

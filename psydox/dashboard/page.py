@@ -73,7 +73,16 @@ def render_dashboard(
         if on_batch and st.button("📊 Batch Processing", use_container_width=True, key="sb_batch"):
             on_batch()
         if st.button("Sign Out", key="sb_signout", use_container_width=True):
-            st.session_state.logged_in = False
+            try:
+                from psydox.auth.service import get_auth_service
+                get_auth_service().logout(
+                    st.session_state.get("session_id", ""),
+                    user_email=st.session_state.get("user_email", ""),
+                )
+            except Exception:
+                pass
+            st.session_state.logged_in  = False
+            st.session_state.session_id = ""
             st.rerun()
 
         # Admin: health check (only shown when DEBUG_MODE or admin role)

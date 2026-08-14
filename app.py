@@ -80,22 +80,14 @@ def _flush_job(jid):
         pass
 
 # ── Auth ─────────────────────────────────────────────────────────────────────
+# Legacy users.yaml kept for reference only — AuthService migrates it to DB on startup.
 USERS_FILE = Path(__file__).parent / "users.yaml"
 
-def _load_users():
-    if not USERS_FILE.exists(): return {}
-    with open(USERS_FILE) as f: return yaml.safe_load(f) or {}
-
-def _check_creds(email, password):
-    u = _load_users().get(email.lower().strip())
-    if u and bcrypt.checkpw(password.encode(), u["password_hash"].encode()):
-        return u.get("name", email)
-    return None
-
 # ── Session defaults ──────────────────────────────────────────────────────────
-for k, v in {"logged_in": False, "user_name": "", "user_email": "", "job_id": None,
-              "preview_idx": 0, "zip_bytes": None, "excel_bytes": None,
-              "nb_mode": False}.items():
+for k, v in {"logged_in": False, "user_id": "", "session_id": "", "user_name": "",
+              "user_email": "", "user_role": "viewer",
+              "job_id": None, "preview_idx": 0, "zip_bytes": None,
+              "excel_bytes": None, "nb_mode": False}.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
@@ -134,41 +126,44 @@ if _jid and _jid not in _JOBS:
         _flush_job(_jid)
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  LOGIN
+#  LOGIN — handled by the new AuthService + auth UI
 # ═════════════════════════════════════════════════════════════════════════════
 if not st.session_state.logged_in:
-    _, col, _ = st.columns([1, 2, 1])
-    with col:
-        st.markdown("""
-        <div style='text-align:center;padding:40px 0 24px'>
-          <div style='font-size:56px'>⚡</div>
-          <h1 style='color:#ff6600;margin:0;letter-spacing:2px'>Psydox</h1>
-          <p style='color:#888;font-size:14px'>Image Processing Engine</p>
-        </div>""", unsafe_allow_html=True)
-        with st.form("login"):
-            email = st.text_input("Email", placeholder="you@company.com")
-            pwd   = st.text_input("Password", type="password")
-            ok    = st.form_submit_button("Sign In →", use_container_width=True)
-        if ok:
-            name = _check_creds(email, pwd)
-            if name:
-                st.session_state.logged_in = True
-                st.session_state.user_name = name
-                st.session_state.user_email = email.lower().strip()
-                try:
-                    from psydox.security.audit import get_audit_log
-                    get_audit_log().log(email.lower().strip(), "login")
-                except Exception:
-                    pass
-                st.rerun()
-            else:
-                try:
-                    from psydox.security.audit import get_audit_log
-                    get_audit_log().log(email.lower().strip(), "login_failed")
-                except Exception:
-                    pass
-                st.error("Incorrect email or password.")
-    st.stop()
+    try:
+        from psydox.auth.service import get_auth_service
+        from psydox.auth.ui import render_auth_page
+        _auth_svc = get_auth_service()
+        if not render_auth_page(_auth_svc):
+            st.stop()
+    except Exception as _auth_err:
+        _log.exception("Auth system error — falling back to legacy login")
+        # Emergency legacy fallback so existing users are never locked out
+        _, col, _ = st.columns([1, 2, 1])
+        with col:
+            st.markdown("""
+            <div style='text-align:center;padding:40px 0 24px'>
+              <div style='font-size:56px'>⚡</div>
+              <h1 style='color:#ff6600;margin:0;letter-spacing:2px'>Psydox</h1>
+              <p style='color:#888;font-size:14px'>Image Processing Engine</p>
+            </div>""", unsafe_allow_html=True)
+            st.error(f"Auth system error: {_auth_err}")
+            import yaml, bcrypt as _bcrypt
+            with st.form("login_fallback"):
+                _em = st.text_input("Email", placeholder="you@company.com")
+                _pw = st.text_input("Password", type="password")
+                _ok = st.form_submit_button("Sign In →", use_container_width=True)
+            if _ok:
+                _users = yaml.safe_load(USERS_FILE.read_text()) if USERS_FILE.exists() else {}
+                _u = _users.get(_em.lower().strip())
+                if _u and _bcrypt.checkpw(_pw.encode(), _u["password_hash"].encode()):
+                    st.session_state.logged_in  = True
+                    st.session_state.user_name  = _u.get("name", _em)
+                    st.session_state.user_email = _em.lower().strip()
+                    st.session_state.user_role  = _u.get("role", "viewer")
+                    st.rerun()
+                else:
+                    st.error("Incorrect email or password.")
+        st.stop()
 
 # ═════════════════════════════════════════════════════════════════════════════
 #  BACKGROUND WORKER
@@ -352,7 +347,16 @@ with c3:
     st.markdown(f"<div style='text-align:right;padding-top:6px;color:#888'>"
                 f"👤 {st.session_state.user_name}</div>", unsafe_allow_html=True)
     if st.button("Sign Out"):
-        st.session_state.logged_in = False
+        try:
+            from psydox.auth.service import get_auth_service
+            get_auth_service().logout(
+                st.session_state.get("session_id", ""),
+                user_email=st.session_state.get("user_email", ""),
+            )
+        except Exception:
+            pass
+        st.session_state.logged_in  = False
+        st.session_state.session_id = ""
         st.rerun()
 
 with st.sidebar:
