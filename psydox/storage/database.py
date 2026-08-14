@@ -273,6 +273,11 @@ def get_db() -> sqlite3.Connection:
     return _get_conn()
 
 
+def get_db_path() -> Path:
+    """Return the Path to the SQLite database file."""
+    return Path(_DB_PATH)
+
+
 # ── Convenience helpers ───────────────────────────────────────────────────────
 
 def db_execute(sql: str, params: tuple = ()) -> sqlite3.Cursor:

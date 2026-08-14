@@ -72,6 +72,25 @@ def render_dashboard(
                     on_ai_studio()
         if on_batch and st.button("📊 Batch Processing", use_container_width=True, key="sb_batch"):
             on_batch()
+
+        # Admin: download registered users as Excel
+        if is_owner:
+            st.markdown("---")
+            st.markdown("**👥 Users**")
+            try:
+                from psydox.auth.service import get_all_users_excel
+                excel_bytes = get_all_users_excel()
+                st.download_button(
+                    "⬇ Download Users Excel",
+                    data=excel_bytes,
+                    file_name="psydox_users.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    key="sb_users_dl",
+                )
+            except Exception as _e:
+                st.caption(f"Users export unavailable: {_e}")
+
         if st.button("Sign Out", key="sb_signout", use_container_width=True):
             try:
                 from psydox.auth.service import get_auth_service

@@ -19,12 +19,7 @@ from psydox.auth.validation import normalize_email, validate_email, validate_nam
 
 _log = logging.getLogger("psydox.auth.service")
 
-# When SKIP_EMAIL_VERIFICATION=1, new accounts are immediately active.
-# Use this when SMTP is not configured and you still want registration to work.
-_SKIP_VERIFY = os.environ.get("SKIP_EMAIL_VERIFICATION", "0").strip() in ("1", "true", "yes")
-
-_VERIFICATION_TTL = 48 * 3600   # 48 hours
-_RESET_TTL        = 1  * 3600   # 1 hour
+_RESET_TTL = 1 * 3600   # 1 hour
 
 
 class AuthService:
@@ -97,32 +92,18 @@ class AuthService:
         pw_hash = self._pw.hash(password)
         now = time.time()
 
-        if _SKIP_VERIFY:
-            # SKIP_EMAIL_VERIFICATION=1 — activate immediately, no email needed
-            user = self._repo.create(
-                full_name=full_name.strip(),
-                email=norm_email,
-                password_hash=pw_hash,
-                role="user",
-                email_verified=True,
-                status=AccountStatus.ACTIVE,
-                terms_accepted_at=now,
-            )
-            self._audit(norm_email, "user_registered")
-            _log.info("New user registered (skip-verify): %s", norm_email)
-            return AuthResult.ok(user)
-
+        # Accounts are always immediately active — no email verification step.
         user = self._repo.create(
             full_name=full_name.strip(),
             email=norm_email,
             password_hash=pw_hash,
             role="user",
-            email_verified=False,
-            status=AccountStatus.PENDING_VERIFICATION,
+            email_verified=True,
+            status=AccountStatus.ACTIVE,
             terms_accepted_at=now,
         )
 
-        self._send_verification(user)
+        _append_registration_log(user)
         self._audit(norm_email, "user_registered")
         _log.info("New user registered: %s", norm_email)
         return AuthResult.ok(user)
@@ -175,13 +156,6 @@ class AuthService:
             self._repo.record_failed_login(user.id)
             self._audit(norm_email, "login_failed", detail="wrong password")
             return AuthResult.fail(_GENERIC, "INVALID_CREDENTIALS")
-
-        # Unverified account — handle separately so UI can offer resend
-        if not user.email_verified or user.status == AccountStatus.PENDING_VERIFICATION:
-            return AuthResult.fail(
-                "Please verify your email address before signing in.",
-                "UNVERIFIED",
-            )
 
         # Success
         session = self._sessions.create(user.id, remember_me=remember_me)
@@ -375,19 +349,6 @@ class AuthService:
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
-    def _send_verification(self, user: User) -> None:
-        try:
-            raw_token = self._tok.generate()
-            token_hash = self._tok.hash(raw_token)
-            self._repo.set_verification_token(
-                user.id, token_hash, time.time() + _VERIFICATION_TTL
-            )
-            svc = _get_email_service()
-            svc.send_verification_email(user.email, user.full_name, raw_token)
-            self._audit(user.email, "verification_email_sent")
-        except Exception as exc:
-            _log.error("verification email failed for %s: %s", user.email, exc)
-
     def _check_rate_limit(self, email: str) -> bool:
         try:
             from psydox.security.ratelimit import get_rate_limiter
@@ -410,6 +371,117 @@ class AuthService:
 def _get_email_service():
     from psydox.auth.email import get_email_service
     return get_email_service()
+
+
+# ── Registration Excel log ────────────────────────────────────────────────────
+
+import threading as _threading
+_reg_log_lock = _threading.Lock()
+
+def _append_registration_log(user: "User") -> None:
+    """Append one row to user_registrations.xlsx next to the DB file.
+    Thread-safe.  Non-fatal on any error.
+    """
+    try:
+        import datetime, openpyxl
+        from psydox.storage.database import get_db_path
+
+        log_path = get_db_path().parent / "user_registrations.xlsx"
+
+        with _reg_log_lock:
+            if log_path.exists():
+                wb = openpyxl.load_workbook(log_path)
+                ws = wb.active
+            else:
+                wb = openpyxl.Workbook()
+                ws = wb.active
+                ws.title = "Registrations"
+                ws.append([
+                    "Full Name", "Email", "Role", "Status",
+                    "Password Hash", "Registered At",
+                ])
+                # Header styling
+                from openpyxl.styles import Font, PatternFill
+                hdr_fill = PatternFill("solid", fgColor="FF6600")
+                hdr_font = Font(bold=True, color="FFFFFF")
+                for cell in ws[1]:
+                    cell.fill = hdr_fill
+                    cell.font = hdr_font
+
+            registered_at = datetime.datetime.fromtimestamp(
+                user.created_at
+            ).strftime("%Y-%m-%d %H:%M:%S")
+
+            ws.append([
+                user.full_name,
+                user.email,
+                user.role,
+                user.status.value,
+                user.password_hash,   # bcrypt hash — one-way, cannot be reversed
+                registered_at,
+            ])
+            wb.save(log_path)
+    except Exception as exc:
+        _log.warning("registration log write failed (non-fatal): %s", exc)
+
+
+def get_registration_log_excel() -> bytes | None:
+    """Return the current user_registrations.xlsx as bytes, or None if empty."""
+    try:
+        from psydox.storage.database import get_db_path
+        log_path = get_db_path().parent / "user_registrations.xlsx"
+        if log_path.exists():
+            return log_path.read_bytes()
+    except Exception:
+        pass
+    return None
+
+
+def get_all_users_excel() -> bytes:
+    """Generate a fresh Users Excel from the DB (always up-to-date)."""
+    import io, datetime, openpyxl
+    from psydox.auth.repository import get_user_repository
+    from openpyxl.styles import Font, PatternFill
+
+    repo = get_user_repository()
+    users = repo.list_all()
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Users"
+    headers = ["Full Name", "Email", "Role", "Status", "Registered At",
+               "Last Login", "Email Verified", "Password Hash"]
+    ws.append(headers)
+    hdr_fill = PatternFill("solid", fgColor="FF6600")
+    hdr_font = Font(bold=True, color="FFFFFF")
+    for cell in ws[1]:
+        cell.fill = hdr_fill
+        cell.font = hdr_font
+
+    for u in users:
+        def _fmt(ts):
+            if not ts:
+                return ""
+            return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+        ws.append([
+            u.full_name,
+            u.email,
+            u.role,
+            u.status.value,
+            _fmt(u.created_at),
+            _fmt(u.last_login_at),
+            "Yes" if u.email_verified else "No",
+            u.password_hash,
+        ])
+
+    # Auto-width columns
+    for col in ws.columns:
+        max_len = max((len(str(cell.value or "")) for cell in col), default=10)
+        ws.column_dimensions[col[0].column_letter].width = min(max_len + 2, 50)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 
 
 _service: AuthService | None = None
