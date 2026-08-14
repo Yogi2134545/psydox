@@ -8,6 +8,7 @@ Thread-safety: all state is in the DB; no mutable in-process state.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Optional
 
@@ -17,6 +18,10 @@ from psydox.auth.tokens import TokenService
 from psydox.auth.validation import normalize_email, validate_email, validate_name
 
 _log = logging.getLogger("psydox.auth.service")
+
+# When SKIP_EMAIL_VERIFICATION=1, new accounts are immediately active.
+# Use this when SMTP is not configured and you still want registration to work.
+_SKIP_VERIFY = os.environ.get("SKIP_EMAIL_VERIFICATION", "0").strip() in ("1", "true", "yes")
 
 _VERIFICATION_TTL = 48 * 3600   # 48 hours
 _RESET_TTL        = 1  * 3600   # 1 hour
@@ -91,6 +96,22 @@ class AuthService:
 
         pw_hash = self._pw.hash(password)
         now = time.time()
+
+        if _SKIP_VERIFY:
+            # SKIP_EMAIL_VERIFICATION=1 — activate immediately, no email needed
+            user = self._repo.create(
+                full_name=full_name.strip(),
+                email=norm_email,
+                password_hash=pw_hash,
+                role="user",
+                email_verified=True,
+                status=AccountStatus.ACTIVE,
+                terms_accepted_at=now,
+            )
+            self._audit(norm_email, "user_registered")
+            _log.info("New user registered (skip-verify): %s", norm_email)
+            return AuthResult.ok(user)
+
         user = self._repo.create(
             full_name=full_name.strip(),
             email=norm_email,

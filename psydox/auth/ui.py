@@ -132,6 +132,10 @@ def _handle_url_params(svc: "AuthService") -> str | None:
 
 def _page_login(svc: "AuthService") -> bool:
     _logo()
+    # Show success banner when redirected from skip-verify registration
+    reg_email = st.session_state.pop("_reg_success_email", None)
+    if reg_email:
+        st.success(f"✅ Account created for **{reg_email}**. You can sign in now.")
     with st.form("auth_login_form"):
         email = st.text_input("Email", placeholder="you@company.com", key="li_email")
         pwd   = st.text_input("Password", type="password", key="li_pwd")
@@ -188,9 +192,16 @@ def _page_register(svc: "AuthService") -> None:
     if ok:
         result = svc.register(name, email, pwd, pwd2, terms_accepted=terms)
         if result.success:
-            st.session_state._reg_email = email
-            _set_state("verify_sent")
-            st.rerun()
+            import os
+            if os.environ.get("SKIP_EMAIL_VERIFICATION", "0").strip() in ("1", "true", "yes"):
+                # Account is already active — go straight to login with a success message
+                st.session_state._reg_success_email = email
+                _set_state("login")
+                st.rerun()
+            else:
+                st.session_state._reg_email = email
+                _set_state("verify_sent")
+                st.rerun()
         else:
             st.error(result.error or "Registration failed.")
 
