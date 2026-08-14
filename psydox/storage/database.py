@@ -34,9 +34,10 @@ from typing import Optional
 
 _log = logging.getLogger("psydox.storage.database")
 
-_DB_PATH  = os.environ.get("PSYDOX_DB_PATH", str(Path.cwd() / "psydox.db"))
-_lock     = threading.Lock()
-_conn_tls = threading.local()  # per-thread connection
+_DB_PATH     = os.environ.get("PSYDOX_DB_PATH", str(Path.cwd() / "psydox.db"))
+_lock        = threading.Lock()
+_conn_tls    = threading.local()  # per-thread connection
+_initialized = False              # True after first successful init_db()
 
 # ── Migration registry ────────────────────────────────────────────────────────
 # Each entry: (version_int, description, sql)
@@ -184,10 +185,14 @@ def _get_conn() -> sqlite3.Connection:
 
 
 def init_db() -> None:
-    """Apply all pending migrations. Call once at startup."""
+    """Apply all pending migrations. Runs once per process; subsequent calls are no-ops."""
+    global _initialized
+    if _initialized:
+        return
     with _lock:
+        if _initialized:  # double-checked: another thread may have finished while we waited
+            return
         conn = _get_conn()
-        # Get current version
         try:
             row = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
             current = row[0] or 0
@@ -202,7 +207,8 @@ def init_db() -> None:
                 conn.commit()
                 current = version
 
-    _log.info("Database ready at %s (schema v%d)", _DB_PATH, current)
+        _initialized = True
+        _log.info("Database ready at %s (schema v%d)", _DB_PATH, current)
 
 
 def get_db() -> sqlite3.Connection:

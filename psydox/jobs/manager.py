@@ -217,7 +217,34 @@ class JobManager:
         return self.all(user_email=user_email, limit=n)
 
     def stats(self, user_email: str = "") -> dict:
-        jobs = self.all(user_email=user_email, limit=500)
+        if self._db_ok:
+            try:
+                _sql = """
+                    SELECT
+                        COUNT(*) AS total,
+                        SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed,
+                        SUM(CASE WHEN status='failed'    THEN 1 ELSE 0 END) AS failed,
+                        SUM(CASE WHEN status NOT IN
+                            ('completed','partial','failed','cancelled')
+                            THEN 1 ELSE 0 END) AS active
+                    FROM jobs
+                """
+                if user_email:
+                    row = self._db.execute(_sql + " WHERE user_email=?", (user_email,)).fetchone()
+                else:
+                    row = self._db.execute(_sql).fetchone()
+                return {
+                    "total":     int(row[0] or 0),
+                    "completed": int(row[1] or 0),
+                    "failed":    int(row[2] or 0),
+                    "active":    int(row[3] or 0),
+                }
+            except Exception as exc:
+                _log.debug("JobManager.stats SQL failed: %s", exc)
+        # In-memory fallback
+        jobs = list(self._store.values())
+        if user_email:
+            jobs = [j for j in jobs if j.user_email == user_email]
         return {
             "total":     len(jobs),
             "completed": sum(1 for j in jobs if j.status == JobStatus.COMPLETED),
@@ -273,4 +300,9 @@ def _job_store() -> dict:
 
 
 def get_job_manager() -> JobManager:
+    if _HAS_ST:
+        @st.cache_resource
+        def _make_manager():
+            return JobManager(_job_store())
+        return _make_manager()
     return JobManager(_job_store())
