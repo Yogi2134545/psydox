@@ -1,16 +1,20 @@
 """
-Psydox — Owner Access Control
+Psydox — Owner Access Control (legacy shim)
 
-Single source of truth for AI Studio permissions.
-yogeshwar@popclub.co is the only account that can access AI features.
-All checks are case-insensitive and strip whitespace.
+Access is now driven entirely by the DB role stored in session_state.
+This module is kept for backward-compatibility with older call-sites;
+new code should read st.session_state.user_role directly.
+
+The only remaining use of a hardcoded email is OWNER_EMAIL, which is the
+bootstrap system owner used during the DB migration that assigns the
+'owner' role on first run.
 """
 from __future__ import annotations
 
 OWNER_EMAIL: str = "yogeshwar@popclub.co"
 
-# Any future additional owners can be added here without changing callers.
-_OWNER_SET: frozenset[str] = frozenset({OWNER_EMAIL, "surya.pant@popclub.co"})
+# Kept for bootstrap/migration purposes only — not used for live access control.
+_OWNER_SET: frozenset[str] = frozenset({OWNER_EMAIL})
 
 
 def is_owner(email: str) -> bool:
@@ -22,11 +26,10 @@ def can_access_ai_studio(email: str) -> bool:
 
 
 def require_owner(email: str) -> None:
-    """Raise PermissionError if the email does not have owner access.
+    """Raise PermissionError if the email is not the bootstrap system owner.
 
-    Call this at the start of any AI execution path as a server-side guard.
-    The UI should already hide AI features for non-owners, but this ensures
-    no session-state manipulation can bypass the restriction.
+    Prefer checking st.session_state.user_role in ('owner', 'admin') in UI code.
+    This guard is kept for deep execution paths that lack session access.
     """
     if not is_owner(email):
         raise PermissionError(

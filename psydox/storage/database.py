@@ -223,6 +223,10 @@ _MIGRATIONS: list[tuple[int, str, str]] = [
         CREATE INDEX IF NOT EXISTS idx_sessions_user    ON sessions(user_id);
         CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
     """),
+    (4, "set system owner role", """
+        UPDATE users SET role = 'owner', updated_at = strftime('%s', 'now')
+        WHERE lower(trim(email)) = 'yogeshwar@popclub.co' AND role != 'owner';
+    """),
 ]
 
 

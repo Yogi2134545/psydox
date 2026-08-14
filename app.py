@@ -126,17 +126,21 @@ if _jid and _jid not in _JOBS:
         _flush_job(_jid)
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  LOGIN — handled by the new AuthService + auth UI
+#  AUTH — login gate + per-load role refresh
 # ═════════════════════════════════════════════════════════════════════════════
-if not st.session_state.logged_in:
-    try:
-        from psydox.auth.service import get_auth_service
-        from psydox.auth.ui import render_auth_page
-        _auth_svc = get_auth_service()
-        if not render_auth_page(_auth_svc):
-            st.stop()
-    except Exception as _auth_err:
-        _log.exception("Auth system error — falling back to legacy login")
+# render_auth_page is called on EVERY page load (not just when logged_out).
+# For logged-in users it short-circuits: validates the session, refreshes
+# user_role from DB (so admin role changes take effect on the next interaction),
+# then returns True.  For guests it shows the login form and returns False.
+try:
+    from psydox.auth.service import get_auth_service
+    from psydox.auth.ui import render_auth_page
+    _auth_svc = get_auth_service()
+    if not render_auth_page(_auth_svc):
+        st.stop()
+except Exception as _auth_err:
+    _log.exception("Auth system error — falling back to legacy login")
+    if not st.session_state.logged_in:
         # Emergency legacy fallback so existing users are never locked out
         _, col, _ = st.columns([1, 2, 1])
         with col:
@@ -222,12 +226,14 @@ def _worker(job_id, cfg, out_dir):
 if "psydox_nav" not in st.session_state:
     st.session_state.psydox_nav = "dashboard"
 
-from psydox.access import can_access_ai_studio as _can_ai, require_owner as _require_owner
-# Owner = hardcoded email set OR RBAC role owner/admin (supports new DB-registered admins)
-_user_is_owner = (
-    _can_ai(st.session_state.get("user_email", ""))
-    or st.session_state.get("user_role", "") in ("owner", "admin")
-)
+# Access flags — driven entirely by DB role, refreshed from DB on every load above.
+# Never use hardcoded email checks here; role changes in admin panel take effect
+# on the user's next page interaction.
+_user_role      = st.session_state.get("user_role", "viewer")
+_user_is_owner  = _user_role in ("owner", "admin")
+_user_can_ai    = _user_role in ("owner", "admin", "manager", "editor", "creative")
+_user_can_batch = _user_role in ("owner", "admin", "manager", "operator",
+                                  "editor", "creative", "catalog_operator")
 
 # ─── Dashboard view ──────────────────────────────────────────────────────────
 if st.session_state.psydox_nav == "dashboard":
@@ -246,9 +252,8 @@ if st.session_state.psydox_nav == "dashboard":
             st.rerun()
 
         def _go_ai():
-            # AI Studio button — owner only (UI hides it, backend enforces)
-            if not _user_is_owner:
-                st.error("AI Studio is restricted to the owner account.")
+            if not _user_can_ai:
+                st.error("AI Studio requires editor, manager, or admin role.")
                 return
             st.session_state.psydox_nav = "studio"
             st.session_state.studio_start_tool = "ai_background"
@@ -274,7 +279,7 @@ if st.session_state.psydox_nav == "dashboard":
             user_name=st.session_state.user_name,
             on_feature_select=_on_feature,
             on_classic=_go_classic,
-            on_ai_studio=_go_ai if _user_is_owner else None,
+            on_ai_studio=_go_ai if _user_can_ai else None,
             on_new_project=_new_project,
             on_batch=_go_batch,
             on_admin_users=_go_admin_users if _user_is_owner else None,
@@ -359,6 +364,15 @@ if st.session_state.psydox_nav not in ("batch", "classic"):
     st.session_state.psydox_nav = "dashboard"
     st.rerun()
 
+# Role gate — viewer/user/reviewer roles cannot access batch processing
+if not _user_can_batch:
+    st.error("⛔ You don't have permission to use the Batch Processor.")
+    st.caption(f"Current role: **{_user_role}**. Ask an admin to update your role.")
+    if st.button("← Back to Dashboard"):
+        st.session_state.psydox_nav = "dashboard"
+        st.rerun()
+    st.stop()
+
 # ═════════════════════════════════════════════════════════════════════════════
 #  BATCH PROCESSING HEADER + SIDEBAR
 # ═════════════════════════════════════════════════════════════════════════════
@@ -435,7 +449,7 @@ with st.sidebar:
 
     # AI Studio is now in the unified Studio workspace — not in batch mode.
     st.session_state.nb_mode = False
-    if _user_is_owner:
+    if _user_can_ai:
         st.info("💡 Use **⚡ Classic Studio** or **✨ AI Studio** from the dashboard for single-image editing.")
 
     st.markdown("---")

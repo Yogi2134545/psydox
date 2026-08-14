@@ -38,8 +38,10 @@ def render_admin_users_page(on_back=None) -> None:
     from psydox.auth.service import get_auth_service, get_all_users_excel, get_registration_log_excel
     from psydox.auth.models import AccountStatus
 
-    svc         = get_auth_service()
-    admin_email = st.session_state.get("user_email", "")
+    svc              = get_auth_service()
+    admin_email      = st.session_state.get("user_email", "")
+    admin_role       = st.session_state.get("user_role", "admin")
+    _caller_is_owner = admin_role == "owner"
 
     # ── Header ────────────────────────────────────────────────────────────────
     hcol, bcol = st.columns([5, 1])
@@ -158,35 +160,55 @@ def render_admin_users_page(on_back=None) -> None:
                         else:
                             st.error(res.error)
 
-                # Role change
-                cur_role_idx = _ROLE_OPTIONS.index(user.role) if user.role in _ROLE_OPTIONS else 0
-                new_role = st.selectbox(
-                    "Change Role",
-                    _ROLE_OPTIONS,
-                    index=cur_role_idx,
-                    key=f"role_{uid}",
-                )
-                if new_role != user.role:
-                    if st.button("Save Role", key=f"saverole_{uid}", use_container_width=True):
-                        res = svc.admin_update_role(uid, new_role, admin_email)
-                        if res.success:
-                            st.success(f"Role updated to {new_role}.")
-                            st.rerun()
-                        else:
-                            st.error(res.error)
+                # Role change — enforce hierarchy:
+                #   Only owner can assign/edit owner or admin roles.
+                #   Admin can only assign roles below admin.
+                #   Nobody can change their own role (safety lock).
+                _is_self      = user.email.lower() == admin_email.lower()
+                _target_priv  = user.role in ("owner", "admin")
+                _can_edit     = _caller_is_owner or (not _is_self and not _target_priv)
+                _assignable   = _ROLE_OPTIONS if _caller_is_owner else [
+                    r for r in _ROLE_OPTIONS if r not in ("owner", "admin")
+                ]
 
-                # Suspend / Activate
+                if not _can_edit:
+                    if _is_self:
+                        st.caption("🔒 Cannot change your own role.")
+                    elif user.role == "owner":
+                        st.caption("🔒 Owner role — only another owner can modify this.")
+                    else:
+                        st.caption("🔒 Admin role — only the owner can modify admin accounts.")
+                else:
+                    cur_role_idx = _assignable.index(user.role) if user.role in _assignable else 0
+                    new_role = st.selectbox(
+                        "Change Role",
+                        _assignable,
+                        index=cur_role_idx,
+                        key=f"role_{uid}",
+                    )
+                    if new_role != user.role:
+                        if st.button("Save Role", key=f"saverole_{uid}", use_container_width=True):
+                            res = svc.admin_update_role(uid, new_role, admin_email)
+                            if res.success:
+                                st.success(f"Role updated to {new_role}.")
+                                st.rerun()
+                            else:
+                                st.error(res.error)
+
+                # Suspend / Activate — only owner can suspend owners/admins
                 from psydox.auth.models import AccountStatus as _AS
-                if user.status == _AS.ACTIVE:
-                    if st.button("🔴 Suspend", key=f"suspend_{uid}", use_container_width=True):
-                        svc.admin_set_status(uid, _AS.SUSPENDED, admin_email)
-                        st.warning(f"{user.email} suspended.")
-                        st.rerun()
-                elif user.status == _AS.SUSPENDED:
-                    if st.button("🟢 Reactivate", key=f"activate_{uid}", use_container_width=True):
-                        svc.admin_set_status(uid, _AS.ACTIVE, admin_email)
-                        st.success(f"{user.email} reactivated.")
-                        st.rerun()
+                _can_suspend = _caller_is_owner or (not _is_self and not _target_priv)
+                if _can_suspend:
+                    if user.status == _AS.ACTIVE:
+                        if st.button("🔴 Suspend", key=f"suspend_{uid}", use_container_width=True):
+                            svc.admin_set_status(uid, _AS.SUSPENDED, admin_email)
+                            st.warning(f"{user.email} suspended.")
+                            st.rerun()
+                    elif user.status == _AS.SUSPENDED:
+                        if st.button("🟢 Reactivate", key=f"activate_{uid}", use_container_width=True):
+                            svc.admin_set_status(uid, _AS.ACTIVE, admin_email)
+                            st.success(f"{user.email} reactivated.")
+                            st.rerun()
 
                 # Resend verification email
                 if not user.email_verified:
