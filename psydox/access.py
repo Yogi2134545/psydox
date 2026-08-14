@@ -25,14 +25,27 @@ def can_access_ai_studio(email: str) -> bool:
     return is_owner(email)
 
 
-def require_owner(email: str) -> None:
-    """Raise PermissionError if the email is not the bootstrap system owner.
+def require_ai_permission(email: str) -> None:
+    """Raise PermissionError if the user lacks AI execution permission.
 
-    Prefer checking st.session_state.user_role in ('owner', 'admin') in UI code.
-    This guard is kept for deep execution paths that lack session access.
+    Checks DB role first (owner/admin/manager/editor/creative may use AI).
+    Falls back to hardcoded bootstrap owner email if the DB is unavailable.
     """
-    if not is_owner(email):
-        raise PermissionError(
-            "AI Studio is restricted to the owner account. "
-            f"'{email}' does not have access."
-        )
+    try:
+        from psydox.auth.service import get_auth_service
+        user = get_auth_service().get_user_by_email(email)
+        if user and user.role in ("owner", "admin", "manager", "editor", "creative"):
+            return
+    except Exception:
+        pass
+    # Fallback: bootstrap owner always has access
+    if is_owner(email):
+        return
+    raise PermissionError(
+        f"AI tools require at least editor or manager role. '{email}' does not have access."
+    )
+
+
+def require_owner(email: str) -> None:
+    """Alias kept for call-site compatibility — delegates to require_ai_permission."""
+    require_ai_permission(email)

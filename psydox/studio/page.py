@@ -21,7 +21,7 @@ from typing import Any
 import streamlit as st
 from PIL import Image
 
-from psydox.access import can_access_ai_studio, require_owner
+from psydox.access import require_owner
 from psydox.studio.executor import execute_tool, exec_enhance
 
 
@@ -262,7 +262,9 @@ def render_studio(
     _ensure_state()
     _inject_css()
 
-    is_owner_user = can_access_ai_studio(user_email)
+    # AI tools are shown when the user's DB role permits — refreshed by auth on every load.
+    _ai_roles = ("owner", "admin", "manager", "editor", "creative")
+    is_owner_user = st.session_state.get("user_role", "viewer") in _ai_roles
 
     if start_tool and st.session_state.studio_tool != start_tool:
         st.session_state.studio_tool = start_tool
@@ -273,7 +275,7 @@ def render_studio(
         st.markdown(
             '<span style="font-size:1.3rem;font-weight:800;color:#6366f1;">⚡ PSYDOX</span>'
             f'<span style="font-size:0.75rem;color:rgba(255,255,255,.4);margin-left:6px;">'
-            f'{"AI Studio" if is_owner_user else "Classic Studio"}</span>',
+            f'{"AI Studio" if (is_owner_user and st.session_state.get("studio_tool","").startswith(("ai_","jadu"))) else "Classic Studio"}</span>',
             unsafe_allow_html=True,
         )
     with tb2:

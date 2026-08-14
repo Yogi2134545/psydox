@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import streamlit as st
 
-from psydox.access import can_access_ai_studio
 from psydox.dashboard.theme import get_theme_manager
 from psydox.dashboard.preferences import get_preferences
 from psydox.dashboard.widgets import (
@@ -25,7 +24,9 @@ def render_dashboard(
     on_admin_users:    callable | None = None,
 ) -> None:
     """Full Gen-Z dashboard."""
-    is_owner = can_access_ai_studio(user_email)
+    # AI access is determined by the caller (app.py) via the on_ai_studio callback.
+    # Non-None means the current user's role permits AI features.
+    is_owner = on_ai_studio is not None
     prefs = get_preferences(user_email)
     tm    = get_theme_manager()
     tm.inject_css(accent_override=prefs.get("accent", ""))
@@ -130,7 +131,7 @@ def render_dashboard(
     render_hero(
         user_name=user_name,
         on_classic=on_classic,
-        on_ai_studio=on_ai_studio if is_owner else None,
+        on_ai_studio=on_ai_studio,
     )
 
     st.markdown("<br>", unsafe_allow_html=True)
