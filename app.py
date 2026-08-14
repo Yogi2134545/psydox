@@ -549,6 +549,52 @@ elif job.get("results"):
                 del _JOBS[job_id]
                 st.query_params.clear()
                 gc.collect()
+
+            # ── Failed images Excel (generated once, cached in session state) ─
+            if failed > 0:
+                _fex_key = f"_fex_{job_id}"
+                if _fex_key not in st.session_state:
+                    _fex_bytes = None
+                    try:
+                        import csv as _csv, types as _types
+                        from psydox.batch.excel_reader import read_excel_bytes as _rxb
+                        from psydox.batch.processor import build_failed_excel
+                        _rp = res.get("report")
+                        _eb = st.session_state.excel_bytes
+                        if _rp and Path(_rp).exists() and _eb:
+                            _rr = _rxb(_eb)
+                            def _reason(s):
+                                if s == "FAILED_DOWNLOAD": return "Download failed"
+                                if s.startswith("FAILED_OPEN"): return "Could not open image"
+                                if s == "FAILED_SAVE": return "Could not save image"
+                                if s.startswith("FAILED_CONVERT"): return "Image conversion failed"
+                                return s.replace("_", " ").title()
+                            _seen, _fe = set(), []
+                            with open(_rp, "r", encoding="utf-8") as _f:
+                                for _row in _csv.DictReader(_f):
+                                    _sc = _row.get("style_code", "")
+                                    _st = _row.get("status", "OK")
+                                    if _st != "OK" and _sc and _sc not in _seen:
+                                        _seen.add(_sc)
+                                        _fe.append(_types.SimpleNamespace(
+                                            style_code=_sc,
+                                            reason=_reason(_st),
+                                            raw_row=_rr.raw_rows.get(_sc),
+                                        ))
+                            if _fe:
+                                _fex_bytes = build_failed_excel(_fe, _rr.headers, _rr.raw_rows)
+                    except Exception:
+                        pass
+                    st.session_state[_fex_key] = _fex_bytes
+                if st.session_state.get(_fex_key):
+                    st.download_button(
+                        f"⬇ Download Failed Excel ({failed} records)",
+                        data=st.session_state[_fex_key],
+                        file_name="failed_images.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                        key="batch_failed_dl_btn",
+                    )
     else:
         if not job.get("running"):
             st.warning("No output images — check your Excel URLs are publicly accessible.")
