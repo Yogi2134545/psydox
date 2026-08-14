@@ -121,8 +121,8 @@ class MaskingFeature(FeatureModule):
         }
 
     def _composite(self, seg, bg_rgb: tuple) -> dict:
-        bg   = Image.new("RGBA", Image.open(io.BytesIO(seg.image_rgba)).size, (*bg_rgb, 255))
         mask = Image.open(io.BytesIO(seg.image_rgba)).convert("RGBA")
+        bg   = Image.new("RGBA", mask.size, (*bg_rgb, 255))
         bg.paste(mask, mask=mask.split()[3])
         out = bg.convert("RGB")
         buf = io.BytesIO()

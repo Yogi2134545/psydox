@@ -96,17 +96,19 @@ class MaskingEngine:
 
     def segment(self, img: Image.Image) -> MaskResult:
         """Remove background and return transparent PNG bytes + detected bounding box."""
-        bbox = self.detect(img)
         if _rembg_ok:
             try:
-                rgba   = _rembg_remove(img.convert("RGBA"))
+                # Single rembg call — derive bbox from the same RGBA result.
+                rgba, bbox = self._rembg_once(img)
                 method = "rembg"
             except Exception as exc:
                 _log.warning("rembg segment failed (%s), falling back to opencv", exc)
                 rgba   = self._opencv_segment(img)
+                bbox   = self._make_bbox_from_opencv(img)
                 method = "opencv"
         else:
             rgba   = self._opencv_segment(img)
+            bbox   = self._make_bbox_from_opencv(img)
             method = "opencv"
 
         buf = io.BytesIO()
@@ -114,6 +116,41 @@ class MaskingEngine:
         return MaskResult(image_rgba=buf.getvalue(), bbox=bbox, method=method)
 
     # ── Internal helpers ───────────────────────────────────────────────────────
+
+    def _rembg_once(self, img: Image.Image) -> tuple:
+        """
+        Call rembg once and return (rgba_image, BBoxResult).
+        Eliminates the double rembg call that would occur if detect() were
+        called before segment() separately.
+        """
+        rgba_img = _rembg_remove(img.convert("RGBA"))
+        alpha    = np.array(rgba_img)[:, :, 3]
+        rows     = np.any(alpha > 10, axis=1)
+        cols     = np.any(alpha > 10, axis=0)
+        w, h     = img.width, img.height
+        if not rows.any():
+            bbox = BBoxResult(left=0, top=0, right=w, bottom=h,
+                              confidence=0.0, method="rembg")
+        else:
+            top    = int(np.argmax(rows))
+            bottom = int(len(rows) - np.argmax(rows[::-1]) - 1)
+            left   = int(np.argmax(cols))
+            right  = int(len(cols) - np.argmax(cols[::-1]) - 1)
+            product_fraction = max(1, (right - left) * (bottom - top)) / max(1, w * h)
+            conf   = 0.40 if product_fraction > 0.90 else 0.95
+            bbox   = BBoxResult(left=left, top=top, right=right, bottom=bottom,
+                                confidence=conf, method="rembg")
+        return rgba_img, bbox
+
+    def _make_bbox_from_opencv(self, img: Image.Image) -> BBoxResult:
+        """Run OpenCV bbox detection and wrap result in BBoxResult."""
+        raw = self._bbox_opencv(img)
+        l, t, r, b = raw
+        w, h = img.width, img.height
+        product_fraction = max(1, (r - l) * (b - t)) / max(1, w * h)
+        conf = 0.40 if product_fraction > 0.90 else 0.75
+        return BBoxResult(left=l, top=t, right=r, bottom=b,
+                          confidence=conf, method="opencv")
 
     def _bbox_rembg(self, img: Image.Image) -> tuple:
         try:
