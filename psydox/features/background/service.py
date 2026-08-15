@@ -156,7 +156,7 @@ class BackgroundFeature(FeatureModule):
                                            context.get("router"))
 
             if result is None:
-                return {"success": False, "outputs": [], "errors": ["Processing returned no result."], "metadata": {}}
+                return {"success": False, "outputs": [], "errors": ["Image processing returned no output."], "metadata": {}}
 
             return {
                 "success": True,
@@ -165,7 +165,7 @@ class BackgroundFeature(FeatureModule):
                 "metadata": {"bg_type": bg_type, "feature_id": self.manifest.id},
             }
         except Exception as exc:
-            _log.exception("BackgroundFeature.execute failed")
+            _log.warning("BackgroundFeature.execute failed: %s", exc)
             return {"success": False, "outputs": [], "errors": [str(exc)], "metadata": {}}
 
     # ── Classic solid color ────────────────────────────────────────────────────
@@ -357,14 +357,14 @@ class BackgroundFeature(FeatureModule):
             _orch = AIOrchestrator(router=router) if router else get_orchestrator()
             result = _orch.generate(req, run_quality=True)
             if not result.success:
-                return None
+                raise RuntimeError(result.user_message or "AI generation failed.")
             img = Image.open(io.BytesIO(result.image_bytes)).convert("RGB")
             if ratio_wh:
                 img = _apply_ratio(img, ratio_wh)
             return _to_jpeg(img)
         except Exception as exc:
-            _log.exception("BackgroundFeature AI generation failed")
-            return None
+            _log.warning("BackgroundFeature AI generation failed: %s", exc)
+            raise
 
 
 # ── Utilities ─────────────────────────────────────────────────────────────────

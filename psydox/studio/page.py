@@ -712,9 +712,9 @@ def _render_properties(user_email: str, is_owner_user: bool) -> None:
 
     tid, icon, label, requires_ai = all_tools[tool]
 
-    # Security gate — never execute AI tools for non-owners
+    # Security gate — AI tools require editor role or higher
     if requires_ai and not is_owner_user:
-        st.error("AI tools are available to the owner account only.")
+        st.error("AI tools require editor, manager, admin, or owner role.")
         return
 
     # Billing gate — owner/admin bypass; other roles need wallet balance
@@ -1004,6 +1004,8 @@ def _props_marketplace(cur: bytes, user_email: str) -> None:
 
 def _props_ai_background(cur: bytes, user_email: str) -> None:
     provider_id = _render_provider_selector()
+    if provider_id is None:
+        return
     from psydox.features.background.service import AI_BG_TYPES
     ai_type = st.selectbox("Scene type", AI_BG_TYPES, key="ai_bg_type")
     custom_prompt = ""
@@ -1037,6 +1039,8 @@ def _ai_bg_description(ai_type: str) -> str:
 
 def _props_ai_lifestyle(cur: bytes, user_email: str) -> None:
     provider_id = _render_provider_selector()
+    if provider_id is None:
+        return
     styles = [
         "Casual Street Style", "Home Kitchen", "Office Desk",
         "Gym / Fitness", "Café / Coffee Shop", "Luxury Interior",
@@ -1065,6 +1069,8 @@ _MODEL_ANGLES = ["Front", "Back", "¾ Left", "¾ Right", "Left Side", "Right Sid
 def _props_ai_model(cur: bytes, user_email: str) -> None:
     from psydox.batch.processor import RATIO_PRESETS
     provider_id = _render_provider_selector()
+    if provider_id is None:
+        return
     gender    = st.selectbox("Gender", ["Female", "Male", "Non-binary"], key="mod_gender")
     age_group = st.selectbox("Age group", ["18-25", "25-35", "35-45", "45+"], key="mod_age")
     ethnicity = st.selectbox("Ethnicity", [
@@ -1181,6 +1187,8 @@ def _render_model_results() -> None:
 def _props_ai_scene(cur: bytes, user_email: str) -> None:
     """AI Scene uses BackgroundFeature with an outdoor/studio prompt."""
     provider_id = _render_provider_selector()
+    if provider_id is None:
+        return
     scene_type = st.selectbox("Scene environment", [
         "Luxury Interior", "Modern Kitchen", "Rooftop Urban",
         "Forest / Nature", "Desert / Minimalist", "Café Setting",
@@ -1212,6 +1220,8 @@ def _props_ai_angles(cur: bytes, user_email: str) -> None:
     from psydox.generation.contract import list_angles
 
     provider_id = _render_provider_selector()
+    if provider_id is None:
+        return
 
     st.markdown('<div class="psx-props-header">SELECT ANGLES</div>', unsafe_allow_html=True)
 
