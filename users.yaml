@@ -33,7 +33,5 @@ surya.pant@popclub.co:
   role: admin
   password_hash: ""
 
-yogeshwar@popclub.co:
-  name: Yogeshwar
-  role: owner
-  password_hash: ""
+# Owner is NOT listed here — the login bootstrap handles first-login creation.
+# yogeshwar@popclub.co is auto-created with the submitted password on first login.

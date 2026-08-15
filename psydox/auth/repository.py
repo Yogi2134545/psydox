@@ -99,6 +99,13 @@ class UserRepository:
         )
         self._db().commit()
 
+    def update_password_hash(self, user_id: str, password_hash: str) -> None:
+        self._db().execute(
+            "UPDATE users SET password_hash=?, updated_at=? WHERE id=?",
+            (password_hash, time.time(), user_id),
+        )
+        self._db().commit()
+
     def set_verification_token(
         self, user_id: str, token_hash: str, expires_at: float
     ) -> None:

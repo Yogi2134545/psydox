@@ -201,22 +201,40 @@ class AuthService:
 
         if _is_owner_login:
             user = self._repo.get_by_email(norm_email)
-            if user is None:
-                # First-ever login on a fresh DB (e.g. Railway redeploy wiped storage).
-                # Bootstrap the owner account from the credentials they are submitting now.
-                pw_hash = self._pw.hash(password)
-                self._repo.create(
-                    full_name="Yogeshwar",
-                    email=norm_email,
-                    password_hash=pw_hash,
-                    role="owner",
-                    email_verified=True,
-                    status=AccountStatus.ACTIVE,
-                )
-                _log.info("Owner account bootstrapped from first login attempt")
+            # Bootstrap if no account OR account seeded from users.yaml with empty/invalid hash
+            _needs_bootstrap = user is None or not (user.password_hash or "").startswith("$2b$")
+            if _needs_bootstrap:
+                # First-ever login or yaml-migrated account with empty hash.
+                # Set the password hash from the submitted credentials.
+                try:
+                    pw_hash = self._pw.hash(password)
+                    if user is None:
+                        self._repo.create(
+                            full_name="Yogeshwar",
+                            email=norm_email,
+                            password_hash=pw_hash,
+                            role="owner",
+                            email_verified=True,
+                            status=AccountStatus.ACTIVE,
+                        )
+                    else:
+                        # Account exists but has no usable password — set it now
+                        self._repo.update_password_hash(user.id, pw_hash)
+                        if user.role != "owner":
+                            self._repo.update_role(user.id, "owner")
+                        if not user.email_verified \
+                                or user.status == AccountStatus.PENDING_VERIFICATION:
+                            self._repo.verify_email(user.id)
+                    _log.info("Owner account bootstrapped from first login attempt")
+                except Exception as _boot_err:
+                    _log.error("Owner bootstrap failed: %s", _boot_err)
+                    return AuthResult.fail(
+                        "Account setup failed. Please use 'Create account' to register first.",
+                        "BOOTSTRAP_FAILED",
+                    )
             elif user.role != "owner" or not user.email_verified \
                     or user.status == AccountStatus.PENDING_VERIFICATION:
-                # Account exists but in wrong state — fix it before the password check.
+                # Account exists with a real hash but wrong state — fix it before the password check.
                 self._ensure_system_owner()
 
         user = self._repo.get_by_email(norm_email)
