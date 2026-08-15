@@ -6,8 +6,8 @@ VERIFIED OFFICIAL MODEL SUPPORT (checked 2026-08-07):
   - gemini-2.0-flash-exp-image-generation     → never official, always 404
   - gemini-2.0-flash                          → TEXT-ONLY, always 400 for image output
   - imagen-3.0-*                              → Vertex AI only, NOT AI Studio keys
-  - gemini-2.5-flash-image                   → CURRENT official image model
-  - gemini-3.1-flash-image                   → CURRENT official image model (latest)
+  - gemini-2.5-flash-image                   → CURRENT official image model (fallback)
+  - gemini-3.1-flash-image                   → CURRENT official image model (primary)
 
 Correct SDK: google-genai (NOT google-generativeai)
 Correct call: client.models.generate_content(
@@ -15,6 +15,11 @@ Correct call: client.models.generate_content(
     contents=...,
     config=types.GenerateContentConfig(response_modalities=["IMAGE", "TEXT"])
 )
+
+IMPORTANT — image input encoding:
+  DO NOT pass PIL Image objects in contents[].
+  ALWAYS use: types.Part(inline_data=types.Blob(mime_type="image/jpeg", data=bytes))
+  PIL objects may silently fail or serialize incorrectly depending on SDK version.
 """
 import io
 import os
@@ -35,11 +40,15 @@ logging.basicConfig(stream=sys.stdout, level=logging.INFO,
                     format="[NanoBanana] %(levelname)s %(message)s")
 _log = logging.getLogger("nano_banana.api_client")
 
-# ── Fallback hint list — NOT the source of truth for model discovery ──────────
-# Actual discovery is done dynamically via diagnostics.discover_image_models().
+# ── Authoritative Gemini image-generation model ───────────────────────────────
+# ONE place. Import this constant everywhere rather than hard-coding the string.
+# psydox/ai_core/provider_registry.py and psydox/core/config.py both reference it.
+GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image"
+
+# Ordered fallback list used by find_image_model() when dynamic discovery fails.
 _IMAGE_MODELS_OFFICIAL = [
-    "gemini-3.1-flash-image",    # latest GA (hint only)
-    "gemini-2.5-flash-image",    # current GA (hint only)
+    GEMINI_IMAGE_MODEL,           # primary (latest GA)
+    "gemini-2.5-flash-image",     # secondary fallback
 ]
 
 # ── Packshot angle definitions (8 views) ─────────────────────────────────────
@@ -419,6 +428,53 @@ class GeminiClient:
         except Exception as e:
             return {"success": False, "model": model, "error": str(e)}
 
+    # ── Response parsing ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def _extract_image_bytes(response) -> bytes | None:
+        """
+        Extract image bytes from a Gemini generateContent response.
+
+        Checks two paths:
+          1. response.candidates[N].content.parts  (standard SDK path)
+          2. response.parts                        (flat SDK path, some versions)
+
+        inline_data.data may be raw bytes or a base64-encoded string depending
+        on the SDK version — both are handled.
+        """
+        import base64 as _b64
+
+        def _decode(raw) -> bytes | None:
+            if not raw:
+                return None
+            if isinstance(raw, (bytes, bytearray)):
+                return bytes(raw)
+            if isinstance(raw, str):
+                try:
+                    return _b64.b64decode(raw)
+                except Exception:
+                    return None
+            return None
+
+        # Path 1: candidates[].content.parts
+        for candidate in (response.candidates or []):
+            content = getattr(candidate, "content", None)
+            parts = getattr(content, "parts", []) or []
+            for part in parts:
+                if getattr(part, "inline_data", None):
+                    decoded = _decode(part.inline_data.data)
+                    if decoded:
+                        return decoded
+
+        # Path 2: response.parts (flat, used in some SDK versions)
+        for part in (getattr(response, "parts", None) or []):
+            if getattr(part, "inline_data", None):
+                decoded = _decode(part.inline_data.data)
+                if decoded:
+                    return decoded
+
+        return None
+
     # ── Public generate API ───────────────────────────────────────────────────
 
     def get_perf_metrics(self) -> dict:
@@ -436,7 +492,21 @@ class GeminiClient:
             "total_time": round(self._perf["total_time"], 2),
         }
 
-    def generate_image(self, prompt: str, reference_image_bytes: bytes = None) -> bytes:
+    def generate_image(
+        self,
+        prompt: str,
+        reference_image_bytes: bytes = None,
+        model: str | None = None,
+    ) -> bytes:
+        """Generate or edit an image.
+
+        Args:
+            prompt: Text description for generation.
+            reference_image_bytes: Optional reference image (bytes). When provided,
+                instructs Gemini to edit/remix the product image.
+            model: Override the Gemini image model. When None, find_image_model()
+                is used for dynamic discovery.
+        """
         # MockProvider short-circuit: when DEBUG_MODE=true, never hit the API
         from .mock_provider import get_provider as _get_provider
         _provider = _get_provider(self)
@@ -450,20 +520,71 @@ class GeminiClient:
                 "google-genai SDK not installed. Add 'google-genai>=0.8.0' to requirements.txt"
             )
 
-        model = self.find_image_model()
+        # Model selection — explicit > cached > discovery
+        if model:
+            if self._active_model != model:
+                _log.info("generate_image using configured model: %s", model)
+            self._active_model = model   # cache so is_available() picks it up too
+        else:
+            model = self.find_image_model()
 
         self._perf.setdefault("call_count", 0)
         self._perf["call_count"] += 1
         _call_num = self._perf["call_count"]
 
-        _log.info("generate_image  call=%d  model=%s  prompt=%r  has_ref=%s",
-                  _call_num, model, prompt[:80], reference_image_bytes is not None)
+        _log.info(
+            "generate_image  call=%d  model=%s  prompt=%r  has_ref=%s",
+            _call_num, model, prompt[:80], reference_image_bytes is not None,
+        )
 
+        # ── Build parts list ──────────────────────────────────────────────────
         parts = []
+
         if reference_image_bytes:
+            # Validate and normalise to JPEG bytes.
+            # CRITICAL: do NOT pass a PIL object — it is not reliably serialised
+            # by all google-genai SDK versions. Use explicit types.Blob with bytes.
             from PIL import Image as _PIL
-            pil_img = _PIL.open(io.BytesIO(reference_image_bytes)).convert("RGB")
-            parts.append(pil_img)
+            try:
+                _pil = _PIL.open(io.BytesIO(reference_image_bytes))
+                _w, _h = _pil.size
+                if _w == 0 or _h == 0:
+                    raise ValueError(f"Reference image has zero dimensions {_w}×{_h}")
+                _pil = _pil.convert("RGB")
+                _buf = io.BytesIO()
+                _pil.save(_buf, format="JPEG", quality=92)
+                jpeg_bytes = _buf.getvalue()
+                if not jpeg_bytes:
+                    raise ValueError("JPEG encode produced empty bytes")
+                _log.info(
+                    "generate_image ref_image validated: %d×%d → %d JPEG bytes",
+                    _w, _h, len(jpeg_bytes),
+                )
+            except Exception as _img_err:
+                raise RuntimeError(
+                    f"Reference image validation failed: {_img_err}"
+                ) from _img_err
+
+            # Explicit Blob encoding — works across all google-genai SDK versions.
+            try:
+                image_part = self._types.Part(
+                    inline_data=self._types.Blob(
+                        mime_type="image/jpeg",
+                        data=jpeg_bytes,
+                    )
+                )
+            except (AttributeError, TypeError):
+                # Older SDK (<0.8) used from_bytes helper
+                try:
+                    image_part = self._types.Part.from_bytes(
+                        data=jpeg_bytes, mime_type="image/jpeg"
+                    )
+                except Exception as _pb_err:
+                    raise RuntimeError(
+                        f"Cannot create image Part (SDK version issue): {_pb_err}"
+                    ) from _pb_err
+            parts.append(image_part)
+
         parts.append(prompt)
 
         self._perf["requests"] += 1
@@ -514,16 +635,14 @@ class GeminiClient:
             self._perf["total_time"] += elapsed
             self._perf["timings"].append(elapsed)
 
-            for candidate in (response.candidates or []):
-                for part in candidate.content.parts:
-                    if hasattr(part, "inline_data") and part.inline_data:
-                        _data = part.inline_data.data
-                        _log.info(
-                            "generate_image succeeded  call=%d  attempt=%d  "
-                            "model=%s  bytes=%d  elapsed=%.2fs",
-                            _call_num, _attempt, model, len(_data), elapsed,
-                        )
-                        return _data
+            img_bytes = self._extract_image_bytes(response)
+            if img_bytes:
+                _log.info(
+                    "generate_image succeeded  call=%d  attempt=%d  "
+                    "model=%s  bytes=%d  elapsed=%.2fs",
+                    _call_num, _attempt, model, len(img_bytes), elapsed,
+                )
+                return img_bytes
 
             # Response returned but contained no image data — not retryable
             self._perf["errors"] += 1

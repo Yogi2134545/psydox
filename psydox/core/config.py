@@ -15,7 +15,7 @@ class PsydoxConfig:
 
     # ── AI Provider ───────────────────────────────────────────────────────────
     google_api_key:     str   = ""
-    ai_default_model:   str   = "gemini-2.5-flash-image"
+    ai_default_model:   str   = "gemini-3.1-flash-image"   # kept in sync with GEMINI_IMAGE_MODEL
     ai_text_model:      str   = "gemini-2.0-flash"
 
     # ── AI Quality thresholds ─────────────────────────────────────────────────
@@ -51,7 +51,7 @@ def load_config() -> PsydoxConfig:
         debug_mode          = env("DEBUG_MODE", "false").lower() in ("1", "true", "yes"),
 
         google_api_key      = env("GOOGLE_API_KEY", ""),
-        ai_default_model    = env("AI_DEFAULT_MODEL", "gemini-2.5-flash-image"),
+        ai_default_model    = env("AI_DEFAULT_MODEL", "gemini-3.1-flash-image"),
         ai_text_model       = env("AI_TEXT_MODEL", "gemini-2.0-flash"),
 
         quality_approved_threshold = int(env("QUALITY_APPROVED_THRESHOLD", "70")),

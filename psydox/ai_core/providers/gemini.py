@@ -16,8 +16,9 @@ class GeminiImageProvider(ImageGenerationProvider):
 
     _COST_PER_IMAGE = 0.04
 
-    def __init__(self):
+    def __init__(self, model: str | None = None):
         self._client = None
+        self._model = model  # configured model from ProviderRegistry catalogue
         self._init_client()
 
     def _init_client(self):
@@ -54,11 +55,18 @@ class GeminiImageProvider(ImageGenerationProvider):
                 error="Gemini client not initialized. Check GOOGLE_API_KEY.",
             )
 
+        # Model priority: explicit caller arg > instance configured model > client discovery
+        _model = model or self._model
+
         t0 = time.monotonic()
         try:
-            img_bytes = self._client.generate_image(prompt, reference_image_bytes=reference_bytes)
+            img_bytes = self._client.generate_image(
+                prompt,
+                reference_image_bytes=reference_bytes,
+                model=_model,
+            )
             latency = int((time.monotonic() - t0) * 1000)
-            model_used = self._client._active_model or "unknown"
+            model_used = self._client._active_model or _model or "unknown"
             return ProviderResult(
                 success=True,
                 image_bytes=img_bytes,
@@ -70,9 +78,14 @@ class GeminiImageProvider(ImageGenerationProvider):
             )
         except Exception as e:
             latency = int((time.monotonic() - t0) * 1000)
+            _log.error(
+                "GeminiImageProvider.generate failed  model=%s  error=%s",
+                _model, str(e),
+            )
             return ProviderResult(
                 success=False,
                 provider=self.name,
+                model=_model or "unknown",
                 latency_ms=latency,
                 error=str(e),
             )

@@ -23,6 +23,7 @@ from enum import Enum
 from typing import Optional
 
 from .providers.base import ImageGenerationProvider
+from nano_banana.api_client import GEMINI_IMAGE_MODEL
 
 _log = logging.getLogger("psydox.ai_core.provider_registry")
 
@@ -69,7 +70,7 @@ _CATALOGUE: list[dict] = [
         "id": "gemini", "display_name": "Google Gemini",
         "env_var": "GOOGLE_API_KEY",
         "env_var_alt": "GEMINI_API_KEY",
-        "default_model": "gemini-2.0-flash-preview-image-generation",
+        "default_model": GEMINI_IMAGE_MODEL,   # single source of truth in nano_banana/api_client.py
         "description": "Google's multimodal AI — excellent image editing and understanding",
         "icon": "🔵",
     },
@@ -157,7 +158,8 @@ class ProviderRegistry:
     def _instantiate(self, pid: str) -> ImageGenerationProvider:
         if pid == "gemini":
             from .providers.gemini import GeminiImageProvider
-            return GeminiImageProvider()
+            entry = next((e for e in _CATALOGUE if e["id"] == pid), {})
+            return GeminiImageProvider(model=entry.get("default_model"))
         if pid == "openai":
             from .providers.openai_provider import OpenAIImageProvider
             return OpenAIImageProvider()
