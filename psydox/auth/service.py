@@ -142,22 +142,30 @@ class AuthService:
                 "DUPLICATE_EMAIL",
             )
 
+        from psydox.access import OWNER_EMAIL
+        is_owner_reg = (norm_email == normalize_email(OWNER_EMAIL))
+
         pw_hash = self._pw.hash(password)
         now = time.time()
         user = self._repo.create(
             full_name=full_name.strip(),
             email=norm_email,
             password_hash=pw_hash,
-            role="user",
-            email_verified=False,
-            status=AccountStatus.PENDING_VERIFICATION,
+            role="owner" if is_owner_reg else "user",
+            email_verified=is_owner_reg,
+            status=AccountStatus.ACTIVE if is_owner_reg else AccountStatus.PENDING_VERIFICATION,
             terms_accepted_at=now,
         )
 
         _append_registration_log(user)
-        raw_token = self._send_verification(user)
         self._audit(norm_email, "user_registered")
-        _log.info("New user registered: %s", norm_email)
+        _log.info("New user registered: %s  (owner_bootstrap=%s)", norm_email, is_owner_reg)
+
+        if is_owner_reg:
+            # Owner is immediately active — no email verification needed.
+            return AuthResult.ok(user)
+
+        raw_token = self._send_verification(user)
 
         # When no email service is configured, surface the link in the UI
         # so users aren't stuck waiting for a mail that never arrives.
@@ -187,6 +195,13 @@ class AuthService:
 
         # Generic error message — never reveal whether account exists
         _GENERIC = "Invalid email or password."
+
+        # For the owner email, re-run the system-owner check on every login.
+        # This fixes the common case: owner registered via the web form (getting
+        # role=user, unverified) before this bootstrap logic existed.
+        from psydox.access import OWNER_EMAIL
+        if norm_email == normalize_email(OWNER_EMAIL):
+            self._ensure_system_owner()
 
         user = self._repo.get_by_email(norm_email)
         if user is None:
