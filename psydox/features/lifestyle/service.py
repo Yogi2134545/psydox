@@ -47,7 +47,7 @@ class LifestyleFeature(FeatureModule):
         ratio_wh     = context.get("ratio_wh")
 
         try:
-            from psydox.ai_core.orchestrator import get_orchestrator, AIRequest
+            from psydox.ai_core.orchestrator import AIOrchestrator, get_orchestrator, AIRequest
             from psydox.ai_core.prompt_engine import PromptEngine, PromptContext
             from psydox.ai_core.router import TaskType
 
@@ -64,7 +64,9 @@ class LifestyleFeature(FeatureModule):
                 reference_bytes=image_bytes,
                 feature_id=self.manifest.id,
             )
-            result = get_orchestrator().generate(request, run_quality=True)
+            _router = context.get("router")
+            _orch = AIOrchestrator(router=_router) if _router else get_orchestrator()
+            result = _orch.generate(request, run_quality=True)
 
             if not result.success:
                 return {

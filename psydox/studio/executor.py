@@ -9,7 +9,7 @@ from __future__ import annotations
 import io
 import logging
 
-from psydox.access import require_owner
+from psydox.access import require_ai_permission
 
 _log = logging.getLogger("psydox.studio.executor")
 
@@ -17,10 +17,10 @@ _log = logging.getLogger("psydox.studio.executor")
 def execute_tool(tool_id: str, inputs: dict, user_email: str) -> dict:
     """Route a tool call to the appropriate backend service.
 
-    AI tools raise PermissionError internally via require_owner(),
-    which is caught here and returned as a structured error dict.
+    AI tools are gated by require_ai_permission() which allows
+    owner / admin / manager / editor / creative roles.
     This is the server-side access gate — the UI should hide AI tools
-    for non-owners, but this ensures bypass-resistance.
+    for non-permitted roles, but this ensures bypass-resistance.
     """
     try:
         if tool_id == "background":
@@ -32,19 +32,19 @@ def execute_tool(tool_id: str, inputs: dict, user_email: str) -> dict:
         if tool_id in ("packshot", "marketplace"):
             return _exec_classic(inputs)
         if tool_id in ("ai_background", "ai_scene"):
-            require_owner(user_email)
+            require_ai_permission(user_email)
             return _exec_background(inputs)
         if tool_id == "ai_lifestyle":
-            require_owner(user_email)
+            require_ai_permission(user_email)
             return _exec_lifestyle(inputs)
         if tool_id == "ai_model":
-            require_owner(user_email)
+            require_ai_permission(user_email)
             return _exec_model_gen(inputs)
         if tool_id == "ai_angles":
-            require_owner(user_email)
+            require_ai_permission(user_email)
             return execute_angle_generation(inputs, user_email)
         if tool_id == "jadu_ka_ghar":
-            require_owner(user_email)
+            require_ai_permission(user_email)
             return _exec_jadu_ka_ghar(inputs)
         if tool_id == "masking":
             return _exec_masking(inputs)

@@ -152,7 +152,8 @@ class BackgroundFeature(FeatureModule):
                 result = self._remove_background(image_bytes, ratio_wh)
             else:
                 # AI path: studio, lifestyle, outdoor, editorial, custom ai
-                result = self._generate_ai(image_bytes, bg_type, inputs, ratio_wh)
+                result = self._generate_ai(image_bytes, bg_type, inputs, ratio_wh,
+                                           context.get("router"))
 
             if result is None:
                 return {"success": False, "outputs": [], "errors": ["Processing returned no result."], "metadata": {}}
@@ -318,7 +319,7 @@ class BackgroundFeature(FeatureModule):
     # ── AI generation ─────────────────────────────────────────────────────────
 
     def _generate_ai(self, image_bytes: bytes, bg_type: str,
-                      inputs: dict, ratio_wh: Optional[tuple]) -> Optional[bytes]:
+                      inputs: dict, ratio_wh: Optional[tuple], router=None) -> Optional[bytes]:
         custom_prompt = inputs.get("ai_prompt", "")
         product_desc  = inputs.get("product_desc", "")
 
@@ -345,7 +346,7 @@ class BackgroundFeature(FeatureModule):
         )
 
         try:
-            from psydox.ai_core.orchestrator import get_orchestrator, AIRequest
+            from psydox.ai_core.orchestrator import AIOrchestrator, get_orchestrator, AIRequest
             from psydox.ai_core.router import TaskType
             req = AIRequest(
                 task=TaskType.CREATIVE_BACKGROUND,
@@ -353,7 +354,8 @@ class BackgroundFeature(FeatureModule):
                 reference_bytes=image_bytes,
                 feature_id=self.manifest.id,
             )
-            result = get_orchestrator().generate(req, run_quality=True)
+            _orch = AIOrchestrator(router=router) if router else get_orchestrator()
+            result = _orch.generate(req, run_quality=True)
             if not result.success:
                 return None
             img = Image.open(io.BytesIO(result.image_bytes)).convert("RGB")

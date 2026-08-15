@@ -49,7 +49,7 @@ class ModelGenFeature(FeatureModule):
         ratio_wh     = context.get("ratio_wh")
 
         try:
-            from psydox.ai_core.orchestrator import get_orchestrator, AIRequest
+            from psydox.ai_core.orchestrator import AIOrchestrator, get_orchestrator, AIRequest
             from psydox.ai_core.router import TaskType
             from nano_banana.prompt_builder import build_model_prompt
 
@@ -61,7 +61,11 @@ class ModelGenFeature(FeatureModule):
                 reference_bytes=image_bytes,
                 feature_id=self.manifest.id,
             )
-            result = get_orchestrator().generate(request, run_quality=True)
+            # Use the per-request router from context (UI provider selector) when available;
+            # fall back to the global singleton when no explicit router was provided.
+            _router = context.get("router")
+            _orch = AIOrchestrator(router=_router) if _router else get_orchestrator()
+            result = _orch.generate(request, run_quality=True)
 
             if not result.success:
                 return {

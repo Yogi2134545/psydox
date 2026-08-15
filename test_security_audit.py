@@ -80,7 +80,7 @@ hdr("FIX 3: users.yaml — no real bcrypt hashes")
 import pathlib, re
 yaml_path = pathlib.Path("users.yaml")
 if yaml_path.exists():
-    _yaml_text = yaml_path.read_text()
+    _yaml_text = yaml_path.read_text(encoding="utf-8")
     # Detect real bcrypt hashes: $2b$NN$ or $2a$NN$
     _real_hashes = re.findall(r"password_hash:\s+(\$2[ab]\$\d+\$\S+)", _yaml_text)
     check("no real bcrypt hashes in users.yaml",
@@ -94,7 +94,7 @@ else:
 
 # ── Fix 4: legacy auth fallback removed from app.py ──────────────────────────
 hdr("FIX 4: app.py — legacy auth fallback removed")
-_app_src = pathlib.Path("app.py").read_text()
+_app_src = pathlib.Path("app.py").read_text(encoding="utf-8")
 check("no 'login_fallback' form key in app.py",
       "login_fallback" not in _app_src,
       "legacy fallback form still present")
@@ -269,7 +269,7 @@ check("T8.2 old two-commit pattern removed",
 
 # ── Fix 9: rate limiter fails closed ─────────────────────────────────────────
 hdr("FIX 9: _check_rate_limit fails closed on exception")
-_svc_src = pathlib.Path("psydox/auth/service.py").read_text()
+_svc_src = pathlib.Path("psydox/auth/service.py").read_text(encoding="utf-8")
 _rl_method = _svc_src[
     _svc_src.index("def _check_rate_limit"):
     _svc_src.index("def _check_rate_limit") + 400
