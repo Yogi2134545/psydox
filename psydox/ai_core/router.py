@@ -123,25 +123,10 @@ class AIModelRouter:
 
 
 def build_router() -> AIModelRouter:
-    """Build the default router based on DEBUG_MODE and available credentials."""
-    debug = os.environ.get("DEBUG_MODE", "").lower() in ("1", "true", "yes")
+    """Build the default router using all configured providers via ProviderRegistry.
 
-    if debug:
-        from .providers.mock import MockImageProvider, MockVisionProvider
-        _log.info("AIModelRouter: DEBUG_MODE — using mock providers")
-        return AIModelRouter(
-            image_provider=MockImageProvider(),
-            vision_provider=MockVisionProvider(),
-        )
-
-    from .providers.gemini import GeminiImageProvider, GeminiVisionProvider
-    image_prov  = GeminiImageProvider()
-    vision_prov = GeminiVisionProvider()
-
-    if not image_prov.is_available():
-        _log.warning(
-            "AIModelRouter: GeminiImageProvider not available "
-            "(GOOGLE_API_KEY missing or SDK not installed)"
-        )
-
-    return AIModelRouter(image_provider=image_prov, vision_provider=vision_prov)
+    Delegates to ProviderRegistry.build_router() so that any configured provider
+    (Gemini, Ideogram, OpenAI, etc.) is used — not just Gemini.
+    """
+    from .provider_registry import get_provider_registry
+    return get_provider_registry().build_router()

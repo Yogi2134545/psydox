@@ -24,6 +24,9 @@ def execute_tool(tool_id: str, inputs: dict, user_email: str) -> dict:
     """
     try:
         if tool_id == "background":
+            _ai_bg = {"studio", "lifestyle", "outdoor", "editorial", "custom ai", "custom_ai"}
+            if (inputs.get("bg_type") or "").lower() in _ai_bg:
+                require_ai_permission(user_email)
             return _exec_background(inputs)
         if tool_id == "resize":
             return _exec_resize(inputs)
@@ -59,7 +62,9 @@ def execute_tool(tool_id: str, inputs: dict, user_email: str) -> dict:
 # ── Backend connectors ────────────────────────────────────────────────────────
 
 def _exec_background(inputs: dict) -> dict:
-    ctx   = _build_context(inputs)
+    ctx = _build_context(inputs)
+    if inputs.get("_ratio_wh"):
+        ctx["ratio_wh"] = inputs["_ratio_wh"]
     clean = {k: v for k, v in inputs.items() if not k.startswith("_")}
     from psydox.features.background.service import BackgroundFeature
     return BackgroundFeature().execute(clean, ctx)
@@ -147,6 +152,8 @@ def exec_enhance(image_bytes: bytes, brightness: float = 1.0, contrast: float = 
 
 def _exec_lifestyle(inputs: dict) -> dict:
     ctx = _build_context(inputs)
+    if inputs.get("_ratio_wh"):
+        ctx["ratio_wh"] = inputs["_ratio_wh"]
     clean = {k: v for k, v in inputs.items() if not k.startswith("_")}
     from psydox.features.lifestyle.service import LifestyleFeature
     return LifestyleFeature().execute(clean, ctx)

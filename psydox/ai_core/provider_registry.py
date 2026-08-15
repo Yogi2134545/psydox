@@ -68,6 +68,7 @@ _CATALOGUE: list[dict] = [
     {
         "id": "gemini", "display_name": "Google Gemini",
         "env_var": "GOOGLE_API_KEY",
+        "env_var_alt": "GEMINI_API_KEY",
         "default_model": "gemini-2.0-flash-preview-image-generation",
         "description": "Google's multimodal AI — excellent image editing and understanding",
         "icon": "🔵",
@@ -126,7 +127,10 @@ class ProviderRegistry:
         for entry in _CATALOGUE:
             pid      = entry["id"]
             env_var  = entry["env_var"]
-            key_set  = bool(os.environ.get(env_var, "").strip())
+            # Support GEMINI_API_KEY as an alias for GOOGLE_API_KEY
+            alt_var  = entry.get("env_var_alt")
+            key_set  = bool(os.environ.get(env_var, "").strip()
+                            or (alt_var and os.environ.get(alt_var, "").strip()))
             status   = ProviderStatus.CONFIGURED if key_set else ProviderStatus.NOT_CONFIGURED
 
             self._infos.append(ProviderInfo(

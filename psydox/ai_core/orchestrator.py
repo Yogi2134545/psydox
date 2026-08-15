@@ -185,3 +185,9 @@ def get_orchestrator() -> AIOrchestrator:
     if _ORCHESTRATOR is None:
         _ORCHESTRATOR = AIOrchestrator()
     return _ORCHESTRATOR
+
+
+def reset_orchestrator() -> None:
+    """Force a new orchestrator on next get_orchestrator() call (e.g. after env vars change)."""
+    global _ORCHESTRATOR
+    _ORCHESTRATOR = None

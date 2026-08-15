@@ -23,8 +23,12 @@ class IdeogramImageProvider(ImageGenerationProvider):
     """Ideogram V3 via jadu_ka_ghar client — remix mode as primary generate."""
 
     def __init__(self):
-        from jadu_ka_ghar.client import IdeogramClient
-        self._client = IdeogramClient()
+        self._client = None
+        try:
+            from jadu_ka_ghar.client import IdeogramClient
+            self._client = IdeogramClient()
+        except Exception as e:
+            _log.warning("IdeogramImageProvider: could not init client: %s", e)
 
     @property
     def name(self) -> str:
@@ -39,7 +43,7 @@ class IdeogramImageProvider(ImageGenerationProvider):
         ]
 
     def is_available(self) -> bool:
-        return self._client.is_available()
+        return self._client is not None and self._client.is_available()
 
     def generate(
         self,
@@ -52,8 +56,13 @@ class IdeogramImageProvider(ImageGenerationProvider):
         Generate an image. When reference_bytes is provided, uses V3 remix
         (preferred for product shots). Otherwise uses V3 generate.
         """
+        if not self._client:
+            return ProviderResult(
+                success=False, provider=self.name,
+                error="Ideogram client not initialized. Check IDEOGRAM_API_KEY.",
+            )
         import time
-        t0 = time.time()
+        t0 = time.monotonic()
         try:
             if reference_bytes:
                 result_bytes = self._client.remix(
@@ -79,7 +88,7 @@ class IdeogramImageProvider(ImageGenerationProvider):
                 image_bytes=result_bytes,
                 model="ideogram-v3",
                 provider=self.name,
-                latency_ms=int((time.time() - t0) * 1000),
+                latency_ms=int((time.monotonic() - t0) * 1000),
             )
         except RuntimeError as e:
             _log.warning("IdeogramImageProvider.generate failed: %s", e)
@@ -87,7 +96,7 @@ class IdeogramImageProvider(ImageGenerationProvider):
                 success=False,
                 model="ideogram-v3",
                 provider=self.name,
-                latency_ms=int((time.time() - t0) * 1000),
+                latency_ms=int((time.monotonic() - t0) * 1000),
                 error=str(e),
             )
         except Exception as e:
@@ -96,7 +105,7 @@ class IdeogramImageProvider(ImageGenerationProvider):
                 success=False,
                 model="ideogram-v3",
                 provider=self.name,
-                latency_ms=int((time.time() - t0) * 1000),
+                latency_ms=int((time.monotonic() - t0) * 1000),
                 error=f"Unexpected error: {e}",
             )
 

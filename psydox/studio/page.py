@@ -1050,7 +1050,7 @@ def _props_ai_lifestyle(cur: bytes, user_email: str) -> None:
     product_desc = st.text_input("Product description",
                                   placeholder="e.g. Blue ceramic coffee mug",
                                   key="ls_prod_desc")
-    custom = st.text_area("Custom prompt override (optional)", height=60, key="ls_custom")
+    custom = st.text_area("Custom prompt override (optional)", height=68, key="ls_custom")
 
     inputs = {
         "image_bytes":   cur,

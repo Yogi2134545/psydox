@@ -17,6 +17,7 @@ Correct call: client.models.generate_content(
 )
 """
 import io
+import os
 import sys
 import time
 import base64
@@ -156,7 +157,13 @@ def get_versions() -> dict:
 class GeminiClient:
 
     def __init__(self):
-        self.api_key = GOOGLE_API_KEY
+        # Read key at instantiation time, not import time, so Railway env vars
+        # injected after module load (e.g. deferred secret mount) are picked up.
+        self.api_key = (
+            os.environ.get("GOOGLE_API_KEY", "")
+            or os.environ.get("GEMINI_API_KEY", "")
+            or GOOGLE_API_KEY   # import-time fallback
+        )
         self._sdk = None
         self._types = None
         self._sdk_ok = False
