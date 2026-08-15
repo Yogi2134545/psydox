@@ -60,13 +60,46 @@ class AuthService:
         self._migrated = True
 
     def _ensure_system_owner(self) -> None:
-        """Guarantee yogeshwar@popclub.co always has the 'owner' role in DB."""
+        """Guarantee yogeshwar@popclub.co always has the 'owner' role in DB.
+
+        On a fresh DB (e.g. Railway deploy with no persistent volume), the owner
+        account does not exist yet. If PSYDOX_OWNER_PASSWORD is set in env, the
+        account is auto-created so the owner can log in immediately without
+        going through the registration flow.
+        """
         from psydox.access import OWNER_EMAIL
         try:
             user = self._repo.get_by_email(OWNER_EMAIL)
-            if user and user.role != "owner":
+
+            if user is None:
+                # Fresh DB — try to seed the owner account from env var
+                seed_pw = os.environ.get("PSYDOX_OWNER_PASSWORD", "").strip()
+                if seed_pw:
+                    pw_hash = self._pw.hash(seed_pw)
+                    user = self._repo.create(
+                        full_name="Yogeshwar",
+                        email=OWNER_EMAIL,
+                        password_hash=pw_hash,
+                        role="owner",
+                        email_verified=True,
+                        status=AccountStatus.ACTIVE,
+                    )
+                    _log.info("Owner account auto-created from PSYDOX_OWNER_PASSWORD")
+                else:
+                    _log.warning(
+                        "Owner account missing from DB and PSYDOX_OWNER_PASSWORD not set. "
+                        "Register manually or set PSYDOX_OWNER_PASSWORD in Railway env vars."
+                    )
+                return
+
+            # Account exists — ensure correct role and active status
+            if user.role != "owner":
                 self._repo.update_role(user.id, "owner")
                 _log.info("Promoted %s to owner role", OWNER_EMAIL)
+            if not user.email_verified or user.status == AccountStatus.PENDING_VERIFICATION:
+                self._repo.verify_email(user.id)
+                _log.info("Auto-verified owner email for %s", OWNER_EMAIL)
+
         except Exception as exc:
             _log.warning("_ensure_system_owner failed (non-fatal): %s", exc)
 
