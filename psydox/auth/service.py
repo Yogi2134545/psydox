@@ -196,12 +196,28 @@ class AuthService:
         # Generic error message — never reveal whether account exists
         _GENERIC = "Invalid email or password."
 
-        # For the owner email, re-run the system-owner check on every login.
-        # This fixes the common case: owner registered via the web form (getting
-        # role=user, unverified) before this bootstrap logic existed.
         from psydox.access import OWNER_EMAIL
-        if norm_email == normalize_email(OWNER_EMAIL):
-            self._ensure_system_owner()
+        _is_owner_login = (norm_email == normalize_email(OWNER_EMAIL))
+
+        if _is_owner_login:
+            user = self._repo.get_by_email(norm_email)
+            if user is None:
+                # First-ever login on a fresh DB (e.g. Railway redeploy wiped storage).
+                # Bootstrap the owner account from the credentials they are submitting now.
+                pw_hash = self._pw.hash(password)
+                self._repo.create(
+                    full_name="Yogeshwar",
+                    email=norm_email,
+                    password_hash=pw_hash,
+                    role="owner",
+                    email_verified=True,
+                    status=AccountStatus.ACTIVE,
+                )
+                _log.info("Owner account bootstrapped from first login attempt")
+            elif user.role != "owner" or not user.email_verified \
+                    or user.status == AccountStatus.PENDING_VERIFICATION:
+                # Account exists but in wrong state — fix it before the password check.
+                self._ensure_system_owner()
 
         user = self._repo.get_by_email(norm_email)
         if user is None:
