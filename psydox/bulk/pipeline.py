@@ -229,7 +229,7 @@ class BulkAIPipeline:
                 detail["stages"]["masking"] = {
                     "method": seg.method,
                     "bbox":   seg.bbox.as_tuple(),
-                    "conf":   seg.bbox.confidence,
+                    "conf":   seg.bbox.quality_hint,
                 }
             except Exception as exc:
                 _log.warning("Masking failed for %s: %s", style_code, exc)

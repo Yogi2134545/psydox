@@ -37,8 +37,10 @@ class BBoxResult:
     top:        int
     right:      int
     bottom:     int
-    confidence: float
+    # quality_hint is a heuristic score (product-area fraction), NOT an ML confidence score.
+    quality_hint: float
     method:     str   # "rembg" | "opencv" | "full_frame"
+    is_heuristic: bool = True
 
     @property
     def width(self) -> int:
@@ -91,7 +93,7 @@ class MaskingEngine:
 
         return BBoxResult(
             left=left, top=top, right=right, bottom=bottom,
-            confidence=confidence, method=method,
+            quality_hint=confidence, method=method,
         )
 
     def segment(self, img: Image.Image) -> MaskResult:
@@ -130,7 +132,7 @@ class MaskingEngine:
         w, h     = img.width, img.height
         if not rows.any():
             bbox = BBoxResult(left=0, top=0, right=w, bottom=h,
-                              confidence=0.0, method="rembg")
+                              quality_hint=0.0, method="rembg")
         else:
             top    = int(np.argmax(rows))
             bottom = int(len(rows) - np.argmax(rows[::-1]) - 1)
@@ -139,7 +141,7 @@ class MaskingEngine:
             product_fraction = max(1, (right - left) * (bottom - top)) / max(1, w * h)
             conf   = 0.40 if product_fraction > 0.90 else 0.95
             bbox   = BBoxResult(left=left, top=top, right=right, bottom=bottom,
-                                confidence=conf, method="rembg")
+                                quality_hint=conf, method="rembg")
         return rgba_img, bbox
 
     def _make_bbox_from_opencv(self, img: Image.Image) -> BBoxResult:
@@ -150,7 +152,7 @@ class MaskingEngine:
         product_fraction = max(1, (r - l) * (b - t)) / max(1, w * h)
         conf = 0.40 if product_fraction > 0.90 else 0.75
         return BBoxResult(left=l, top=t, right=r, bottom=b,
-                          confidence=conf, method="opencv")
+                          quality_hint=conf, method="opencv")
 
     def _bbox_rembg(self, img: Image.Image) -> tuple:
         try:

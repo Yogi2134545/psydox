@@ -38,6 +38,10 @@ class ExcelReadResult:
     raw_rows: dict[str, tuple] = field(default_factory=dict)
     # Column header names taken from the header row (or generated if no header detected).
     headers:  list[str]        = field(default_factory=list)
+    # 1-based Excel row number for the first occurrence of each style_code.
+    # Row 1 = header (if present); data rows start at 2 with a header or 1 without.
+    # Use this to trace a job_item back to the exact source row in the input file.
+    row_numbers: dict[str, int] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -68,8 +72,9 @@ def read_excel_bytes(data: bytes, max_styles: int = _MAX_STYLES) -> ExcelReadRes
     if not rows or len(rows[0]) < 2:
         return ExcelReadResult({}, 0, 0, errors=["Excel must have at least 2 columns: STYLE_CODE and one image URL column."])
 
-    styles:   dict[str, list[str]] = {}
-    raw_rows: dict[str, tuple]     = {}
+    styles:      dict[str, list[str]] = {}
+    raw_rows:    dict[str, tuple]     = {}
+    row_numbers: dict[str, int]       = {}
     warnings: list[str] = []
 
     # Skip the first row if it looks like a header; capture column names
@@ -83,7 +88,8 @@ def read_excel_bytes(data: bytes, max_styles: int = _MAX_STYLES) -> ExcelReadRes
         n_cols = len(rows[0]) if rows else 2
         headers = ["STYLE_CODE"] + [f"Image_URL_{i}" for i in range(1, n_cols)]
 
-    for row in rows[start:]:
+    # excel_row_num is 1-based; row 1 = header when start==1, row 1 = first data when start==0
+    for excel_row_num, row in enumerate(rows[start:], start=start + 1):
         if not row:
             continue
         code = str(row[0]).strip() if row[0] is not None else ""
@@ -104,9 +110,10 @@ def read_excel_bytes(data: bytes, max_styles: int = _MAX_STYLES) -> ExcelReadRes
             warnings.append(f"Style '{code}': no valid URLs found, skipped.")
             continue
 
-        # Store original full row for the first occurrence of this style_code.
+        # Store original full row + Excel row number for the first occurrence.
         if code not in raw_rows:
-            raw_rows[code] = row
+            raw_rows[code]    = row
+            row_numbers[code] = excel_row_num
 
         if code in styles:
             # Merge duplicates
@@ -128,6 +135,7 @@ def read_excel_bytes(data: bytes, max_styles: int = _MAX_STYLES) -> ExcelReadRes
         warnings=warnings,
         raw_rows=raw_rows,
         headers=headers,
+        row_numbers=row_numbers,
     )
 
 

@@ -173,7 +173,9 @@ class FidelityEngine:
             thresh_b = eb > eb.mean()
             intersection = (thresh_a & thresh_b).sum()
             denom = thresh_a.sum() + thresh_b.sum()
-            return float(2 * intersection / (denom + 1e-10))
+            if denom == 0:
+                return 1.0  # both images have no edges — identical by this metric
+            return float(2 * intersection / denom)
         except ImportError:
             from PIL import ImageFilter
             ea = a.convert("L").filter(ImageFilter.FIND_EDGES)
@@ -191,7 +193,11 @@ class FidelityEngine:
             gb   = np.array(b.convert("L"), dtype=float)
             ga_n = ga - ga.mean()
             gb_n = gb - gb.mean()
-            denom = (np.sqrt((ga_n**2).sum()) * np.sqrt((gb_n**2).sum())) + 1e-10
+            var_a = float((ga_n**2).sum())
+            var_b = float((gb_n**2).sum())
+            if var_a < 1e-9 and var_b < 1e-9:
+                return 1.0  # both constant (no texture) — identical by this metric
+            denom = (np.sqrt(var_a) * np.sqrt(var_b)) + 1e-10
             return float(np.clip((ga_n * gb_n).sum() / denom, 0.0, 1.0))
         except ImportError:
             ha = a.convert("L").histogram()

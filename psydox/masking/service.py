@@ -106,7 +106,7 @@ class MaskingFeature(FeatureModule):
         annotated.save(buf, "JPEG", quality=95)
         label = (
             f"Bbox — {bbox.method}, "
-            f"conf {bbox.confidence:.0%}, "
+            f"quality_hint {bbox.quality_hint:.0%}, "
             f"{bbox.width}×{bbox.height} px"
         )
         return {
@@ -115,7 +115,8 @@ class MaskingFeature(FeatureModule):
             "errors":  [],
             "metadata": {
                 "method":     bbox.method,
-                "confidence": bbox.confidence,
+                "quality_hint": bbox.quality_hint,
+                "is_heuristic": bbox.is_heuristic,
                 "bbox":       bbox.as_tuple(),
             },
         }

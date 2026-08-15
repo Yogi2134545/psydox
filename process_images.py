@@ -609,84 +609,20 @@ def remove_grid_lines(img: Image.Image) -> Image.Image:
 #  6.  MAIN CONVERSION  (smart-crop first, extend if needed)
 # ══════════════════════════════════════════════════════════════════════════════
 def convert_to_4_5(img: Image.Image, cfg: dict) -> Image.Image:
-    TW, TH = cfg["TARGET_W"], cfg["TARGET_H"]
+    from psydox.batch.processor import _letterbox_place, _detect_background
 
-    # Convert to RGB early, drop alpha channel (saves memory)
+    TW, TH = cfg["TARGET_W"], cfg["TARGET_H"]
     img = img.convert("RGB")
 
-    # Detect the original background colour BEFORE any replacement —
-    # used to fill the letterbox/pillarbox strips so they match the source.
-    _ia = np.array(img, dtype=np.uint8)
-    _ih, _iw = _ia.shape[:2]
-    _d = min(_BG_SAMPLE_DEPTH, _ih // 4, _iw // 4)
-    _edge = np.concatenate([
-        _ia[:_d, :].reshape(-1, 3), _ia[_ih-_d:, :].reshape(-1, 3),
-        _ia[:, :_d].reshape(-1, 3), _ia[:, _iw-_d:].reshape(-1, 3),
-    ])
-    original_bg = tuple(int(c) for c in np.median(_edge, axis=0).astype(np.uint8))
-
-    # Background handling:
-    #   tuple (R,G,B) → replace mixed bg, then letterbox with that colour
-    #   "auto" / else → FIT/letterbox: extend the image's own edge pixels into the
-    #                   strips so the background transitions seamlessly (no solid bar).
+    original_bg = _detect_background(img)
     _bgr = cfg.get("BG_RGB")
-
-    orig_w, orig_h = img.size
-    scale = min(TW / orig_w, TH / orig_h, 2.0)
-    nw = max(1, int(orig_w * scale))
-    nh = max(1, int(orig_h * scale))
 
     if isinstance(_bgr, (list, tuple)) and len(_bgr) == 3:
         bg_fill = tuple(int(c) for c in _bgr)
         img = replace_mixed_background(img, cfg)
-        scaled = img.resize((nw, nh), Image.LANCZOS)
-        px = (TW - nw) // 2
-        py = (TH - nh) // 2
-        canvas_arr = np.full((TH, TW, 3), bg_fill, dtype=np.uint8)
-        canvas_arr[py:py+nh, px:px+nw] = np.array(scaled, dtype=np.uint8)
-        return Image.fromarray(canvas_arr)
+        return _letterbox_place(img, TW, TH, original_bg, solid_bg_fill=bg_fill)
 
-    # Auto / legacy: FIT then fill the empty strips.
-    # Left/right strips extend edge columns (per-row average) for natural blending.
-    # Top/bottom strips use the detected background colour (original_bg) to avoid
-    # vertical artefacts when product pixels reach the top/bottom image edge.
-    scaled = img.resize((nw, nh), Image.LANCZOS)
-    sc     = np.array(scaled, dtype=np.uint8)
-    px     = (TW - nw) // 2
-    py     = (TH - nh) // 2
-    px_r   = TW - nw - px
-    py_b   = TH - nh - py
-
-    # Corner fill colour: average of the top-left corner patch
-    _ec = min(8, nh, nw)
-    corner_c = tuple(int(c) for c in sc[:_ec, :_ec, :].mean(axis=(0, 1)).astype(np.uint8))
-    canvas_arr = np.full((TH, TW, 3), corner_c, dtype=np.uint8)
-
-    # Left / right strips — extend edge columns, one row at a time
-    if px > 0 or px_r > 0:
-        _ew  = min(8, nw)
-        l_edge = sc[:, :_ew, :].mean(axis=1, keepdims=True).astype(np.uint8)       # (nh,1,3)
-        r_edge = sc[:, max(0, nw - _ew):, :].mean(axis=1, keepdims=True).astype(np.uint8)
-        if px > 0:
-            canvas_arr[py:py + nh, :px]       = np.tile(l_edge, (1, px,   1))
-        if px_r > 0:
-            canvas_arr[py:py + nh, px + nw:]  = np.tile(r_edge, (1, px_r, 1))
-
-    # Top / bottom strips — fill with the detected background colour.
-    # Per-column edge averaging caused vertical artefacts when product pixels
-    # reach the top/bottom edge of the source image (e.g. a stand or pole at a
-    # specific x-position gets averaged into the strip and tiled 100+ px tall).
-    # original_bg is the median of all four edge strips of the original image,
-    # giving a robust background colour even when a few edge pixels are product.
-    if py > 0 or py_b > 0:
-        if py > 0:
-            canvas_arr[:py, px:px + nw]       = original_bg
-        if py_b > 0:
-            canvas_arr[py + nh:, px:px + nw]  = original_bg
-
-    # Place scaled image in centre
-    canvas_arr[py:py + nh, px:px + nw] = sc
-    return Image.fromarray(canvas_arr)
+    return _letterbox_place(img, TW, TH, original_bg, solid_bg_fill=None)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

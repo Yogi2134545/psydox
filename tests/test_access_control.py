@@ -77,8 +77,8 @@ def test_require_owner_error_message_contains_email():
 
 # ── Backend enforcement: AI tool execution blocked for non-owner ──────────────
 
-def test_ai_lifestyle_blocked_for_non_owner():
-    """Studio execute_tool must block AI features regardless of UI state."""
+def test_ai_lifestyle_blocked_for_non_ai_role():
+    """Studio execute_tool must block AI lifestyle for users without AI permission (operator role)."""
     from psydox.studio.executor import execute_tool as _execute_tool
     import io
     from PIL import Image
@@ -86,14 +86,15 @@ def test_ai_lifestyle_blocked_for_non_owner():
     Image.new("RGB", (100, 100), (200, 150, 100)).save(buf, "JPEG")
     img_bytes = buf.getvalue()
 
+    # devesh@popclub.co has 'operator' role — NOT in (owner/admin/manager/editor/creative)
     result = _execute_tool(
         "ai_lifestyle",
         {"image_bytes": img_bytes, "style": "Casual", "product_desc": "test"},
-        user_email="ankit@popclub.co",
+        user_email="devesh@popclub.co",
     )
     assert result is not None
     assert not result["success"]
-    assert any("owner" in e.lower() or "permission" in e.lower() or "restricted" in e.lower()
+    assert any("permission" in e.lower() or "restricted" in e.lower() or "role" in e.lower()
                for e in result.get("errors", []))
 
 

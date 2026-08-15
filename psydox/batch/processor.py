@@ -77,16 +77,48 @@ class BatchConfig:
 
 @dataclass
 class BatchResult:
-    total:   int = 0
+    total_styles: int = 0   # number of unique style codes in the input
+    total_items:  int = 0   # total URLs (images) across all styles
+    total:        int = 0   # alias for total_items — kept for backwards-compat
     success: int = 0
     failed:  int = 0
     skipped: int = 0
-    zip_bytes:         Optional[bytes] = None
-    errors:            list[str]       = field(default_factory=list)
+    zip_bytes:          Optional[bytes] = None
+    errors:             list[str]       = field(default_factory=list)
     failed_excel_bytes: Optional[bytes] = None  # Excel of failed rows, None when 0 failures
 
 
-# ── Core image conversion (identical to process_images.convert_to_4_5) ───────
+# ── HTTP error classification for retry logic ─────────────────────────────────
+
+# These HTTP status codes indicate transient server-side problems — safe to retry.
+_RETRYABLE_HTTP_CODES = frozenset({429, 500, 502, 503, 504})
+
+# These codes indicate permanent failures — retrying will not help.
+_PERMANENT_HTTP_CODES = frozenset({400, 401, 403, 404, 410, 422})
+
+
+def _is_retryable_reason(reason: str) -> bool:
+    """
+    Return True when the failure reason suggests a transient error.
+    Transient: timeout, network error, rate limit (429), server error (5xx).
+    Permanent: bad URL, access denied (4xx), HTML page returned, empty image.
+    """
+    if not reason:
+        return False
+    r = reason.lower()
+    if "timeout" in r:
+        return True
+    if "network error" in r:
+        return True
+    if "connection reset" in r or "connectionerror" in r:
+        return True
+    for code in _RETRYABLE_HTTP_CODES:
+        if f"http {code}" in r:
+            return True
+    return False
+
+
+# ── Core image conversion (canonical implementation shared with process_images.py) ──
 
 def _is_solid_background(img: Image.Image) -> tuple[bool, tuple]:
     """Detect whether the image has a solid background. Returns (is_solid, bg_rgb)."""
@@ -140,62 +172,61 @@ def _replace_mixed_background(img: Image.Image, bg_rgb: tuple) -> Image.Image:
         return img
 
 
-def convert_image(img: Image.Image, cfg: BatchConfig) -> Image.Image:
-    """
-    Convert a PIL image to the target ratio and background.
-    Logic is identical to process_images.convert_to_4_5().
-    """
+def _detect_background(img: Image.Image) -> tuple:
+    """Detect the median background colour from the image's four edge strips."""
     import numpy as np
-
-    TW, TH = cfg.target_w, cfg.target_h
-    img = img.convert("RGB")
-
-    # Detect original background BEFORE any replacement
-    arr = np.array(img, dtype=np.uint8)
+    arr = np.array(img.convert("RGB"), dtype=np.uint8)
     ih, iw = arr.shape[:2]
     d = min(_BG_SAMPLE_DEPTH, ih // 4, iw // 4)
-    if d >= 1:
-        edge = np.concatenate([
-            arr[:d, :].reshape(-1, 3),     arr[ih - d:, :].reshape(-1, 3),
-            arr[:, :d].reshape(-1, 3),     arr[:, iw - d:].reshape(-1, 3),
-        ])
-        original_bg = tuple(int(c) for c in np.median(edge, axis=0).astype(np.uint8))
-    else:
-        original_bg = (235, 235, 235)
+    if d < 1:
+        return (235, 235, 235)
+    edge = np.concatenate([
+        arr[:d, :].reshape(-1, 3),    arr[ih - d:, :].reshape(-1, 3),
+        arr[:, :d].reshape(-1, 3),    arr[:, iw - d:].reshape(-1, 3),
+    ])
+    return tuple(int(c) for c in np.median(edge, axis=0).astype(np.uint8))
 
-    # Background handling — mirrors process_images.convert_to_4_5:
-    #   tuple (R,G,B) → replace bg, then letterbox with that colour
-    #   "auto" / else → FIT/letterbox: extend image edge pixels into strips
+
+def _letterbox_place(
+    img: Image.Image,
+    target_w: int,
+    target_h: int,
+    original_bg: tuple,
+    solid_bg_fill: Optional[tuple] = None,
+) -> Image.Image:
+    """
+    Canonical letterbox implementation shared with process_images.convert_to_4_5().
+
+    Scale img to fit inside (target_w × target_h), place it centred on a canvas.
+
+    solid_bg_fill: when provided the canvas is a solid colour and margins are
+      filled with that colour.  When None ('auto' mode) left/right margins extend
+      the image's edge columns; top/bottom margins use original_bg so the
+      detected background carries through seamlessly.
+    """
     import numpy as _np
-
     orig_w, orig_h = img.size
-    scale = min(TW / orig_w, TH / orig_h, 2.0)
-    nw    = max(1, int(orig_w * scale))
-    nh    = max(1, int(orig_h * scale))
-
-    if isinstance(cfg.bg_rgb, (list, tuple)) and len(cfg.bg_rgb) == 3:
-        bg_fill = tuple(int(c) for c in cfg.bg_rgb)
-        img = _replace_mixed_background(img, bg_fill)
-        scaled = img.resize((nw, nh), Image.LANCZOS)
-        px = (TW - nw) // 2
-        py = (TH - nh) // 2
-        canvas_arr = _np.full((TH, TW, 3), bg_fill, dtype=_np.uint8)
-        canvas_arr[py:py + nh, px:px + nw] = _np.array(scaled, dtype=_np.uint8)
-        return Image.fromarray(canvas_arr)
-
+    scale  = min(target_w / orig_w, target_h / orig_h, 2.0)
+    nw     = max(1, int(orig_w * scale))
+    nh     = max(1, int(orig_h * scale))
     scaled = img.resize((nw, nh), Image.LANCZOS)
     sc     = _np.array(scaled, dtype=_np.uint8)
-    px     = (TW - nw) // 2
-    py     = (TH - nh) // 2
-    px_r   = TW - nw - px
-    py_b   = TH - nh - py
+    px     = (target_w - nw) // 2
+    py     = (target_h - nh) // 2
+    px_r   = target_w - nw - px
+    py_b   = target_h - nh - py
+
+    if solid_bg_fill is not None:
+        canvas_arr = _np.full((target_h, target_w, 3), solid_bg_fill, dtype=_np.uint8)
+        canvas_arr[py:py + nh, px:px + nw] = sc
+        return Image.fromarray(canvas_arr)
 
     _ec = min(8, nh, nw)
-    corner_c = tuple(int(c) for c in sc[:_ec, :_ec, :].mean(axis=(0, 1)).astype(_np.uint8))
-    canvas_arr = _np.full((TH, TW, 3), corner_c, dtype=_np.uint8)
+    corner_c   = tuple(int(c) for c in sc[:_ec, :_ec, :].mean(axis=(0, 1)).astype(_np.uint8))
+    canvas_arr = _np.full((target_h, target_w, 3), corner_c, dtype=_np.uint8)
 
     if px > 0 or px_r > 0:
-        _ew  = min(8, nw)
+        _ew    = min(8, nw)
         l_edge = sc[:, :_ew, :].mean(axis=1, keepdims=True).astype(_np.uint8)
         r_edge = sc[:, max(0, nw - _ew):, :].mean(axis=1, keepdims=True).astype(_np.uint8)
         if px > 0:
@@ -203,7 +234,6 @@ def convert_image(img: Image.Image, cfg: BatchConfig) -> Image.Image:
         if px_r > 0:
             canvas_arr[py:py + nh, px + nw:] = _np.tile(r_edge, (1, px_r, 1))
 
-    # Top / bottom strips — use detected background colour (same fix as process_images.py).
     if py > 0 or py_b > 0:
         if py > 0:
             canvas_arr[:py, px:px + nw]      = original_bg
@@ -212,6 +242,23 @@ def convert_image(img: Image.Image, cfg: BatchConfig) -> Image.Image:
 
     canvas_arr[py:py + nh, px:px + nw] = sc
     return Image.fromarray(canvas_arr)
+
+
+def convert_image(img: Image.Image, cfg: BatchConfig) -> Image.Image:
+    """
+    Convert a PIL image to the target ratio and background.
+    Uses _letterbox_place() — the same canonical algorithm as process_images.convert_to_4_5().
+    """
+    TW, TH = cfg.target_w, cfg.target_h
+    img = img.convert("RGB")
+    original_bg = _detect_background(img)
+
+    if isinstance(cfg.bg_rgb, (list, tuple)) and len(cfg.bg_rgb) == 3:
+        bg_fill = tuple(int(c) for c in cfg.bg_rgb)
+        img = _replace_mixed_background(img, bg_fill)
+        return _letterbox_place(img, TW, TH, original_bg, solid_bg_fill=bg_fill)
+
+    return _letterbox_place(img, TW, TH, original_bg, solid_bg_fill=None)
 
 
 def image_bytes_to_jpeg(img: Image.Image, quality: int) -> bytes:
@@ -353,82 +400,102 @@ def run_batch(
     raw_rows: Optional[dict] = None,
     headers: Optional[list] = None,
     job_id: Optional[str] = None,
+    row_numbers: Optional[dict] = None,
 ) -> BatchResult:
     """
     Download and process all images from the styles dict.
     Returns a BatchResult with a ZIP archive in zip_bytes.
 
-    progress_cb(done, total, current_style) — called after each style.
-    raw_rows / headers — when provided, a failed_images.xlsx is generated in
-    failed_excel_bytes containing failed rows with their original input columns
-    plus a Failure_Reason column.
-    job_id — when provided, per-URL progress is written to the job_items table.
-    """
-    from psydox.batch.item_tracker import get_tracker, make_item_id
-    from psydox.batch.item_tracker import DOWNLOADING, PROCESSING, COMPLETED, FAILED
+    progress_cb(done_styles, total_styles, current_style) — called per style.
+    raw_rows  — {style_code: original_row_tuple} for failed-images Excel.
+    row_numbers — {style_code: excel_row_number} from ExcelReadResult.row_numbers;
+                  used to record the original source row in job_items.
+    job_id    — per-URL progress written to the job_items table when provided.
 
-    tracker        = get_tracker(job_id)
-    result         = BatchResult(total=len(styles))
-    zip_buf        = io.BytesIO()
-    _failed: list  = []   # list of _FailedEntry
-    global_item_idx = 0   # sequential across all (style, url) pairs
+    BatchResult.total_styles = number of unique style codes.
+    BatchResult.total_items  = total URLs (images) across all styles.
+    BatchResult.total        = alias for total_items (backwards-compatible).
+    """
+    import time as _time
+    from psydox.batch.item_tracker import get_tracker, make_item_id
+    from psydox.batch.item_tracker import DOWNLOADING, PROCESSING, COMPLETED, FAILED, RETRYING
+
+    tracker = get_tracker(job_id)
+
+    total_styles = len(styles)
+    total_items  = sum(len(urls) for urls in styles.values())
+    result = BatchResult(
+        total_styles=total_styles,
+        total_items=total_items,
+        total=total_items,
+    )
+
+    zip_buf       = io.BytesIO()
+    _failed: list = []
 
     with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
-        done = 0
+        done_styles = 0
         for style_code, urls in styles.items():
             if progress_cb:
-                progress_cb(done, result.total, style_code)
+                progress_cb(done_styles, total_styles, style_code)
 
             style_success = 0
             for idx, url in enumerate(urls, start=1):
                 item_id = make_item_id(job_id or "nojob", style_code, idx)
-                tracker.create(item_id, url, style_code, global_item_idx)
-                global_item_idx += 1
+                # Use the original Excel row number if available; fall back to url index.
+                row_idx = (row_numbers.get(style_code, idx) if row_numbers else idx)
+                tracker.create(item_id, url, style_code, row_idx)
+
+                img_bytes = None
+                dl_reason = "Download failed"
+
+                # ── Download with retry (transient errors only) ─────────────────
+                for attempt in range(1, cfg.max_retries + 1):
+                    if attempt > 1:
+                        tracker.update(item_id, RETRYING, retry_count=attempt - 1)
+                        wait = min(30, 2 ** (attempt - 2))  # 1 s, 2 s, 4 s, …
+                        _time.sleep(wait)
+
+                    tracker.update(item_id, DOWNLOADING, retry_count=attempt - 1)
+                    img_bytes, dl_reason = _download_with_reason(url, timeout=cfg.timeout)
+
+                    if img_bytes:
+                        break  # success
+
+                    if not _is_retryable_reason(dl_reason or ""):
+                        break  # permanent failure — do not retry
+
+                    _log.debug(
+                        "%s url #%d attempt %d/%d: %s — retrying",
+                        style_code, idx, attempt, cfg.max_retries, dl_reason,
+                    )
+
+                if not img_bytes:
+                    reason = dl_reason or "Download failed"
+                    _log.warning(
+                        "Failed to download %s (url #%d after %d attempt(s)): %s — %s",
+                        style_code, idx, cfg.max_retries, url, reason,
+                    )
+                    result.failed += 1
+                    result.errors.append(f"{style_code} #{idx}: {reason}")
+                    _failed.append(_FailedEntry(
+                        style_code=style_code, url=url, url_index=idx,
+                        reason=reason,
+                        raw_row=raw_rows.get(style_code) if raw_rows else None,
+                    ))
+                    tracker.update(item_id, FAILED, error=reason,
+                                   retry_count=cfg.max_retries - 1)
+                    continue
 
                 try:
-                    tracker.update(item_id, DOWNLOADING)
-                    img_bytes, dl_reason = _download_with_reason(url, timeout=cfg.timeout)
-                    if not img_bytes:
-                        reason = dl_reason or "Download failed"
-                        _log.warning("Failed to download %s (url #%d): %s — %s", style_code, idx, url, reason)
-                        result.failed += 1
-                        result.errors.append(f"{style_code} #{idx}: {reason}")
-                        _failed.append(_FailedEntry(
-                            style_code=style_code, url=url, url_index=idx,
-                            reason=reason,
-                            raw_row=raw_rows.get(style_code) if raw_rows else None,
-                        ))
-                        tracker.update(item_id, FAILED, error=reason)
-                        continue
-
-                    try:
-                        tracker.update(item_id, PROCESSING)
-                        img = Image.open(io.BytesIO(img_bytes))
-                        processed = convert_image(img, cfg)
-                        jpeg_bytes = image_bytes_to_jpeg(processed, cfg.jpeg_quality)
-                    except Exception as conv_exc:
-                        reason = f"Invalid image content: {_safe_reason(conv_exc)}"
-                        _log.warning("Error converting %s url #%d: %s", style_code, idx, conv_exc)
-                        result.errors.append(f"{style_code} #{idx}: {conv_exc}")
-                        result.failed += 1
-                        _failed.append(_FailedEntry(
-                            style_code=style_code, url=url, url_index=idx,
-                            reason=reason,
-                            raw_row=raw_rows.get(style_code) if raw_rows else None,
-                        ))
-                        tracker.update(item_id, FAILED, error=reason)
-                        continue
-
-                    filename = f"{style_code}/{style_code}_{idx:02d}.jpg"
-                    zf.writestr(filename, jpeg_bytes)
-                    style_success += 1
-                    result.success += 1
-                    tracker.update(item_id, COMPLETED, output_id=filename)
-
-                except Exception as exc:
-                    reason = _safe_reason(exc)
-                    _log.warning("Error processing %s url #%d: %s", style_code, idx, exc)
-                    result.errors.append(f"{style_code} #{idx}: {exc}")
+                    tracker.update(item_id, PROCESSING, retry_count=0)
+                    img = Image.open(io.BytesIO(img_bytes))
+                    processed = convert_image(img, cfg)
+                    jpeg_bytes = image_bytes_to_jpeg(processed, cfg.jpeg_quality)
+                except Exception as conv_exc:
+                    reason = f"Invalid image content: {_safe_reason(conv_exc)}"
+                    _log.warning("Error converting %s url #%d: %s", style_code, idx, conv_exc)
+                    result.errors.append(f"{style_code} #{idx}: {conv_exc}")
                     result.failed += 1
                     _failed.append(_FailedEntry(
                         style_code=style_code, url=url, url_index=idx,
@@ -436,13 +503,20 @@ def run_batch(
                         raw_row=raw_rows.get(style_code) if raw_rows else None,
                     ))
                     tracker.update(item_id, FAILED, error=reason)
+                    continue
+
+                filename = f"{style_code}/{style_code}_{idx:02d}.jpg"
+                zf.writestr(filename, jpeg_bytes)
+                style_success += 1
+                result.success += 1
+                tracker.update(item_id, COMPLETED, output_id=filename)
 
             if style_success == 0:
                 result.skipped += 1
 
-            done += 1
+            done_styles += 1
             if progress_cb:
-                progress_cb(done, result.total, style_code)
+                progress_cb(done_styles, total_styles, style_code)
 
     zip_buf.seek(0)
     result.zip_bytes = zip_buf.getvalue()
