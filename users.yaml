@@ -10,7 +10,7 @@
 
 ankit@popclub.co:
   name: Ankit
-  role: manager
+  role: operator
   password_hash: ""
 
 bhargavi.kt@popclub.co:
@@ -30,7 +30,7 @@ test@popclub.co:
 
 surya.pant@popclub.co:
   name: Surya
-  role: admin
+  role: operator
   password_hash: ""
 
 # Owner is NOT listed here — the login bootstrap handles first-login creation.

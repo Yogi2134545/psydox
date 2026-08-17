@@ -34,7 +34,7 @@ def require_ai_permission(email: str) -> None:
     try:
         from psydox.auth.service import get_auth_service
         user = get_auth_service().get_user_by_email(email)
-        if user and user.role in ("owner", "admin", "manager", "editor", "creative"):
+        if user and user.role in ("owner", "admin", "manager", "editor", "creative", "operator"):
             return
     except Exception:
         pass
@@ -42,7 +42,7 @@ def require_ai_permission(email: str) -> None:
     if is_owner(email):
         return
     raise PermissionError(
-        f"AI tools require at least editor or manager role. '{email}' does not have access."
+        f"AI tools require at least operator role. '{email}' does not have access."
     )
 
 
