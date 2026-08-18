@@ -777,10 +777,13 @@ def _process_one(args):
         after_score  = compute_quality_score(processed, TW, TH)
         src_fmt = (Path(source).suffix.lstrip(".").upper()
                    if not source.startswith("http") else "URL")
+        actual_before_size = img_copy.size        # actual original dims (before thumbnail)
+        actual_after_size  = processed.size       # actual output dims (before thumbnail)
         thumb_before = img_copy.copy();  thumb_before.thumbnail((400, 600))
         thumb_after  = processed.copy(); thumb_after.thumbnail((400, 600))
         _preview_queue.put_nowait((thumb_before, thumb_after,
-                                   before_score, after_score, src_fmt))
+                                   before_score, after_score, src_fmt,
+                                   actual_before_size, actual_after_size))
     except Exception:
         pass
 

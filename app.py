@@ -692,13 +692,17 @@ if previews:
     e = previews[idx]
     cb, _, ca = st.columns([10, 1, 10])
     with cb:
-        bw, bh = e[0].size; bg = gcd(bw, bh)
+        # e[5] = actual original dims (added after thumbnail shrink); fall back to thumb size
+        bw, bh = e[5] if len(e) > 5 else e[0].size
+        bg = gcd(bw, bh)
         st.markdown(f"**ORIGINAL** — <span style='color:#ff4444;font-size:22px'><b>{e[2]}%</b></span>",
                     unsafe_allow_html=True)
         st.image(e[0], use_container_width=True)
         st.caption(f"{bw}×{bh}px | {bw//bg}:{bh//bg}")
     with ca:
-        aw, ah = e[1].size; ag = gcd(aw, ah)
+        # e[6] = actual output dims (the real saved file size, not the thumbnail)
+        aw, ah = e[6] if len(e) > 6 else e[1].size
+        ag = gcd(aw, ah)
         st.markdown(f"**PROCESSED** — <span style='color:#00cc66;font-size:22px'><b>{e[3]}%</b></span>",
                     unsafe_allow_html=True)
         st.image(e[1], use_container_width=True)
