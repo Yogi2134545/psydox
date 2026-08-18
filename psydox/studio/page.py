@@ -263,7 +263,7 @@ def render_studio(
     _inject_css()
 
     # AI tools are shown when the user's DB role permits — refreshed by auth on every load.
-    _ai_roles = ("owner", "admin", "manager", "editor", "creative")
+    _ai_roles = ("owner", "admin", "manager", "operator", "editor", "creative")
     is_owner_user = st.session_state.get("user_role", "viewer") in _ai_roles
 
     if start_tool and st.session_state.studio_tool != start_tool:

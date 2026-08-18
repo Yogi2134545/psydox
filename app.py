@@ -231,7 +231,8 @@ if "psydox_nav" not in st.session_state:
 # on the user's next page interaction.
 _user_role      = st.session_state.get("user_role", "viewer")
 _user_is_owner  = _user_role in ("owner", "admin")
-_user_can_ai    = _user_role in ("owner", "admin", "manager", "editor", "creative")
+_user_can_ai    = _user_role in ("owner", "admin", "manager", "operator",
+                                  "editor", "creative")
 _user_can_batch = _user_role in ("owner", "admin", "manager", "operator",
                                   "editor", "creative", "catalog_operator")
 
@@ -253,7 +254,7 @@ if st.session_state.psydox_nav == "dashboard":
 
         def _go_ai():
             if not _user_can_ai:
-                st.error("AI Studio requires editor, manager, or admin role.")
+                st.error("AI Studio requires operator role or higher.")
                 return
             st.session_state.psydox_nav = "studio"
             st.session_state.studio_start_tool = "ai_background"
