@@ -537,7 +537,15 @@ if run_btn and have_file and not is_run:
 job_id = st.session_state.job_id
 job    = _read_job(job_id) if job_id else {}
 
-if job_id:
+# Only poll while the job is actively running or until the completion rerun
+# fires once.  After results are shown, stop the fragment entirely so its
+# periodic 2-second reruns cannot race with a subsequent file-upload drop.
+_poll_needed = job_id and (
+    job.get("running") or
+    not st.session_state.get("_shown_" + (job_id or ""))
+)
+
+if _poll_needed:
     @st.fragment(run_every=2)
     def _poll():
         jid = st.session_state.job_id
