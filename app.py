@@ -231,8 +231,7 @@ if "psydox_nav" not in st.session_state:
 # on the user's next page interaction.
 _user_role      = st.session_state.get("user_role", "viewer")
 _user_is_owner  = _user_role in ("owner", "admin")
-_user_can_ai    = _user_role in ("owner", "admin", "manager", "operator",
-                                  "editor", "creative")
+_user_can_ai    = _user_role in ("owner",)
 _user_can_batch = _user_role in ("owner", "admin", "manager", "operator",
                                   "editor", "creative", "catalog_operator")
 
