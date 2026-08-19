@@ -488,6 +488,9 @@ with st.sidebar:
             st.session_state.job_id    = None
             st.session_state.zip_bytes = None
             st.session_state.excel_bytes = None
+            # Clear the file uploader widget state so the old file doesn't
+            # re-populate excel_bytes on the next render via retained widget state.
+            st.session_state.pop("file_uploader", None)
             st.query_params.clear()
             st.rerun()
 

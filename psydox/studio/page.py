@@ -351,27 +351,28 @@ def _render_upload_zone(is_owner_user: bool) -> None:
             label_visibility="collapsed", key="studio_uploader",
         )
         if uploaded:
-            _do_upload(uploaded)
-            st.rerun()
+            if _do_upload(uploaded):
+                st.rerun()
 
     with tab_excel:
         _render_excel_import()
 
 
-def _do_upload(uploaded_file) -> None:
+def _do_upload(uploaded_file) -> bool:
     from psydox.security.upload import validate_upload
     raw = uploaded_file.getvalue()
     result = validate_upload(raw, uploaded_file.name)
     if not result.valid:
         for e in result.errors:
             st.error(e)
-        return
+        return False
     for w in result.warnings:
         st.warning(w)
     # Reset history with the uploaded image as the first state
     st.session_state.studio_history      = [{"bytes": raw, "label": "Original"}]
     st.session_state.studio_history_idx  = 0
     st.session_state.studio_project_name = uploaded_file.name.rsplit(".", 1)[0].replace("_", " ").title()
+    return True
 
 
 def _render_excel_import() -> None:
@@ -582,8 +583,8 @@ def _render_toolbar(user_email: str, is_owner_user: bool) -> None:
         key="studio_change_img", label_visibility="collapsed",
     )
     if new_upload:
-        _do_upload(new_upload)
-        st.rerun()
+        if _do_upload(new_upload):
+            st.rerun()
     st.caption("Change image")
 
     st.markdown("---")
