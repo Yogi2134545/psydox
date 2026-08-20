@@ -121,8 +121,7 @@ def read_excel(path: str) -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 def sanitize_folder_name(name: str) -> str:
     name = re.sub(r'[\\/:*?"<>|]', "_", name)
-    name = re.sub(r'\s+', "_", name)
-    name = name.strip("._")
+    name = name.strip(" ._")
     return name or "UNNAMED"
 
 _unique_filename_lock = threading.Lock()
@@ -234,6 +233,11 @@ def download_image(url: str, dest_folder: Path, cfg: dict) -> Path | None:
                 log.warning(f"    429 rate limited — waiting {wait:.1f}s")
                 time.sleep(wait)
                 continue
+
+            # Permanent failures — no point retrying (saves 2× wasted timeout per image)
+            if resp.status_code in (403, 404, 410, 451):
+                log.error(f"    ✗ HTTP {resp.status_code} (won't retry): {url[:80]}")
+                return f"FAIL:HTTP_{resp.status_code}"
 
             resp.raise_for_status()
             ct = resp.headers.get("Content-Type", "")
