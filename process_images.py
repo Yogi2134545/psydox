@@ -728,45 +728,62 @@ def remove_grid_lines(img: Image.Image) -> Image.Image:
 #  6.  MAIN CONVERSION  (smart-crop first, extend if needed)
 # ══════════════════════════════════════════════════════════════════════════════
 def convert_to_4_5(img: Image.Image, cfg: dict) -> Image.Image:
-    import numpy as _np
+    """Convert to the exact requested aspect ratio without artificial padding.
 
-    TW, TH = cfg["TARGET_W"], cfg["TARGET_H"]
+    The selected TARGET_W/TARGET_H are authoritative.  The source is cropped
+    to the requested aspect ratio (centered on the product when a foreground
+    bounding box can be detected), then resized exactly to the target size.
+    No letterbox/canvas padding is introduced.
+    """
+    TW, TH = int(cfg["TARGET_W"]), int(cfg["TARGET_H"])
+    if TW <= 0 or TH <= 0:
+        raise ValueError(f"Invalid target dimensions: {TW}x{TH}")
+
     img = img.convert("RGB")
-    orig_w, orig_h = img.size
 
-    # Fit inside target — no cropping, all content preserved
-    scale = min(TW / orig_w, TH / orig_h, 2.0)
-    nw = max(1, round(orig_w * scale))
-    nh = max(1, round(orig_h * scale))
-    scaled = img.resize((nw, nh), Image.LANCZOS)
-    arr = _np.array(scaled, dtype=_np.uint8)
+    # Background replacement remains a separate operation; do not use it to
+    # create a canvas.  This preserves the existing BG behaviour while making
+    # the ratio operation itself crop-to-fill.
+    if cfg.get("BG_RGB") != "auto":
+        img = replace_mixed_background(img, cfg)
 
-    px = (TW - nw) // 2
-    py = (TH - nh) // 2
+    src_w, src_h = img.size
+    target_ratio = TW / TH
+    source_ratio = src_w / src_h
 
-    _bgr = cfg.get("BG_RGB")
-    if isinstance(_bgr, (list, tuple)) and len(_bgr) == 3:
-        canvas = _np.full((TH, TW, 3), [int(c) for c in _bgr], dtype=_np.uint8)
+    if abs(source_ratio - target_ratio) < 1e-6:
+        crop = img
+    elif source_ratio > target_ratio:
+        # Source is wider than target: crop left/right.
+        crop_w = max(1, int(round(src_h * target_ratio)))
+        left = (src_w - crop_w) // 2
+        try:
+            x1, y1, x2, y2 = get_product_bbox(img, False)
+            cx = (x1 + x2) / 2.0
+            left = int(round(cx - crop_w / 2.0))
+        except Exception:
+            pass
+        left = max(0, min(left, src_w - crop_w))
+        crop = img.crop((left, 0, left + crop_w, src_h))
     else:
-        # Sample the image's own edge color so the margin fill is seamless
-        E = min(4, nh, nw)
-        top_c    = arr[:E,  :].mean(axis=(0, 1)).astype(_np.uint8).tolist()
-        bot_c    = arr[-E:, :].mean(axis=(0, 1)).astype(_np.uint8).tolist()
-        left_c   = arr[:,  :E].mean(axis=(0, 1)).astype(_np.uint8).tolist()
-        right_c  = arr[:, -E:].mean(axis=(0, 1)).astype(_np.uint8).tolist()
-        corner_c = arr[:E, :E].mean(axis=(0, 1)).astype(_np.uint8).tolist()
-        canvas = _np.full((TH, TW, 3), corner_c, dtype=_np.uint8)
-        if py > 0:
-            canvas[:py, px:px + nw]      = top_c
-        if py + nh < TH:
-            canvas[py + nh:, px:px + nw] = bot_c
-        if px > 0:
-            canvas[py:py + nh, :px]      = left_c
-        if px + nw < TW:
-            canvas[py:py + nh, px + nw:] = right_c
+        # Source is taller than target: crop top/bottom.
+        crop_h = max(1, int(round(src_w / target_ratio)))
+        top = (src_h - crop_h) // 2
+        try:
+            x1, y1, x2, y2 = get_product_bbox(img, False)
+            cy = (y1 + y2) / 2.0
+            top = int(round(cy - crop_h / 2.0))
+        except Exception:
+            pass
+        top = max(0, min(top, src_h - crop_h))
+        crop = img.crop((0, top, src_w, top + crop_h))
 
-    canvas[py:py + nh, px:px + nw] = arr
-    return Image.fromarray(canvas)
+    output = crop.resize((TW, TH), Image.LANCZOS)
+    if output.size != (TW, TH):
+        raise RuntimeError(
+            f"Ratio pipeline produced {output.size}; expected {(TW, TH)}"
+        )
+    return output
 
 
 # ══════════════════════════════════════════════════════════════════════════════
