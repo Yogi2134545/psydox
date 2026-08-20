@@ -1,7 +1,7 @@
 """Psydox — Nike Image Processor"""
 import logging
 import streamlit as st
-import yaml, bcrypt, zipfile, json, tempfile, threading, gc, shutil, hashlib
+import yaml, bcrypt, zipfile, json, tempfile, threading, gc, shutil, hashlib, secrets, time, os
 from pathlib import Path
 from math import gcd
 
@@ -86,7 +86,7 @@ USERS_FILE = Path(__file__).parent / "users.yaml"
 # ── Session defaults ──────────────────────────────────────────────────────────
 for k, v in {"logged_in": False, "user_id": "", "session_id": "", "user_name": "",
               "user_email": "", "user_role": "viewer",
-              "job_id": None, "preview_idx": 0, "zip_bytes": None,
+              "job_id": None, "preview_idx": 0, "zip_bytes": None, "zip_path": None,
               "excel_bytes": None, "nb_mode": False}.items():
     if k not in st.session_state:
         st.session_state[k] = v
@@ -141,10 +141,23 @@ try:
 except Exception as _auth_err:
     _log.exception("Auth system error")
     st.error(
-        f"Authentication service unavailable: {_auth_err}\n\n"
+        "Authentication service unavailable. "
         "Please try refreshing. If the problem persists, contact your administrator."
     )
     st.stop()
+
+# ── Post-auth job ownership check — clear job_id when it belongs to a different user ──
+if st.session_state.job_id:
+    _owned_d   = _read_job(st.session_state.job_id)
+    _job_owner = _owned_d.get("owner", "")
+    _cur_uid   = st.session_state.get("user_id", "")
+    # Only enforce when both sides are populated (legacy jobs have no owner field)
+    if _job_owner and _cur_uid and _job_owner != _cur_uid:
+        _log.warning("Job %s owned by %s, not current user %s — clearing from session",
+                     st.session_state.job_id, _job_owner, _cur_uid)
+        st.session_state.job_id = None
+        st.session_state.zip_path = None
+        st.query_params.clear()
 
 # ═════════════════════════════════════════════════════════════════════════════
 #  BACKGROUND WORKER
@@ -236,6 +249,48 @@ _user_can_ai    = _user_role in ("owner",)
 _user_can_batch = _user_role in ("owner", "admin", "manager", "operator",
                                   "editor", "creative", "catalog_operator")
 
+# ── Progress polling fragment — defined and called UNCONDITIONALLY here so the
+# run_every scheduler always finds it regardless of navigation state (BUG-004).
+# Non-batch nav states return early and render nothing. ───────────────────────
+_MAX_JOB_SECS = 7200  # 2-hour hard timeout (BUG-005 partial watchdog)
+
+@st.fragment(run_every=2)
+def _poll():
+    try:
+        if st.session_state.get("psydox_nav") not in ("batch", "classic"):
+            return
+        jid = st.session_state.get("job_id", "")
+        if not jid:
+            return
+        j = _read_job(jid)
+        if not j.get("running") and st.session_state.get("_shown_" + jid):
+            return
+        # BUG-005: timeout guard for stuck/hung worker threads
+        if j.get("running") and j.get("started_at") and \
+                time.time() - j["started_at"] > _MAX_JOB_SECS:
+            j["running"] = False
+            j["error"]   = "TIMEOUT: job exceeded maximum run time"
+            _JOBS[jid]   = j
+            _flush_job(jid)
+            st.rerun(scope="app")
+            return
+        if j.get("running"):
+            done   = j.get("done",   0)
+            total  = j.get("total",  0)
+            active = j.get("active", 0)
+            pct    = done / total if total > 0 else 0
+            label  = (f"✅  {done} / {total} done — {int(pct*100)}%"
+                      f"  |  ⬇️ {active} downloading now")
+            st.progress(pct, text=label)
+        elif (j.get("results") or j.get("error")) and \
+                not st.session_state.get("_shown_" + jid):
+            st.session_state["_shown_" + jid] = True
+            st.rerun(scope="app")
+    except Exception:
+        pass
+
+_poll()
+
 # ─── Dashboard view ──────────────────────────────────────────────────────────
 if st.session_state.psydox_nav == "dashboard":
     try:
@@ -292,8 +347,7 @@ if st.session_state.psydox_nav == "dashboard":
         )
     except Exception as e:
         _log.exception("Dashboard render failed")
-        st.error(f"Dashboard error: {e}")
-        import traceback; st.code(traceback.format_exc())
+        st.error("An internal error occurred loading the dashboard. Please refresh or contact your administrator.")
     st.stop()
 
 # ─── Studio view (single-image editor — Classic + AI) ────────────────────────
@@ -314,8 +368,7 @@ if st.session_state.psydox_nav == "studio":
         )
     except Exception as e:
         _log.exception("Studio render failed")
-        st.error(f"Studio error: {e}")
-        import traceback; st.code(traceback.format_exc())
+        st.error("An internal error occurred loading the Studio. Please refresh or contact your administrator.")
     st.stop()
 
 # ─── New project view ────────────────────────────────────────────────────────
@@ -356,8 +409,7 @@ if st.session_state.psydox_nav == "wallet":
         render_wallet_page(on_back=_back_from_wallet)
     except Exception as e:
         _log.exception("Wallet page error")
-        st.error(f"Wallet page error: {e}")
-        import traceback; st.code(traceback.format_exc())
+        st.error("An internal error occurred loading the Wallet page. Please refresh or contact your administrator.")
     st.stop()
 
 # ─── Admin Users view ────────────────────────────────────────────────────────
@@ -374,7 +426,7 @@ if st.session_state.psydox_nav == "admin_users":
             ))
         except Exception as e:
             _log.exception("Admin users page error")
-            st.error(f"Admin page error: {e}")
+            st.error("An internal error occurred loading the Admin page. Please refresh or contact your administrator.")
         st.stop()
 
 # ─── Batch processing view (old classic Excel processor) ─────────────────────
@@ -487,6 +539,7 @@ with st.sidebar:
         if st.button("🔄  New Run", use_container_width=True):
             st.session_state.job_id    = None
             st.session_state.zip_bytes = None
+            st.session_state.zip_path  = None
             st.session_state.excel_bytes = None
             # Clear the file uploader widget state so the old file doesn't
             # re-populate excel_bytes on the next render via retained widget state.
@@ -499,7 +552,9 @@ with st.sidebar:
 # ═════════════════════════════════════════════════════════════════════════════
 if run_btn and have_file and not is_run:
     excel_bytes = st.session_state.excel_bytes
-    job_id      = hashlib.md5(excel_bytes).hexdigest()[:8]
+    # BUG-001/ZIP-001/SEC-005: use a cryptographically random ID so no two users
+    # can ever share a job slot, and IDs are not guessable from file content.
+    job_id      = secrets.token_hex(8)
 
     # Wipe stale output FIRST, then recreate and write Excel
     job_dir = _job_dir(job_id)
@@ -520,11 +575,16 @@ if run_btn and have_file and not is_run:
     )
 
     _JOBS[job_id] = {"running": True, "done": 0, "total": 0, "started": 0, "active": 0,
-                     "results": None, "error": None, "zip_path": None, "previews": []}
+                     "results": None, "error": None, "zip_path": None, "previews": [],
+                     # BUG-007/SEC-005: record owner so URL recovery can enforce isolation
+                     "owner": st.session_state.get("user_id", ""),
+                     # BUG-005: record start time for hung-job watchdog in _poll
+                     "started_at": time.time()}
     _flush_job(job_id)
 
     st.session_state.job_id    = job_id
     st.session_state.zip_bytes = None
+    st.session_state.zip_path  = None
     st.session_state.preview_idx = 0
     st.query_params["job"] = job_id
 
@@ -532,39 +592,10 @@ if run_btn and have_file and not is_run:
     st.rerun()
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  PROGRESS  (only auto-refresh when job is actually running)
+#  PROGRESS + RESULTS
 # ═════════════════════════════════════════════════════════════════════════════
 job_id = st.session_state.job_id
 job    = _read_job(job_id) if job_id else {}
-
-# Always define _poll so Streamlit's scheduler can always find the fragment.
-# The "does not exist" error spam happens when the fragment is defined inside
-# a conditional — after st.rerun() the conditional becomes False, Streamlit
-# removes the fragment, but the run_every timer still fires → error flood.
-@st.fragment(run_every=2)
-def _poll():
-    try:
-        jid = st.session_state.get("job_id", "")
-        if not jid:
-            return
-        j = _read_job(jid)
-        # Stop polling once results have been shown
-        if not j.get("running") and st.session_state.get("_shown_" + jid):
-            return
-        if j.get("running"):
-            done   = j.get("done",   0)
-            total  = j.get("total",  0)
-            active = j.get("active", 0)
-            pct    = done / total if total > 0 else 0
-            label  = f"✅  {done} / {total} done — {int(pct*100)}%  |  ⬇️ {active} downloading now"
-            st.progress(pct, text=label)
-        elif (j.get("results") or j.get("error")) and not st.session_state.get("_shown_" + jid):
-            st.session_state["_shown_" + jid] = True
-            st.rerun(scope="app")
-    except Exception:
-        pass
-
-_poll()
 
 # ═════════════════════════════════════════════════════════════════════════════
 #  RESULTS
@@ -602,26 +633,31 @@ elif job.get("results"):
 
     zp = job.get("zip_path")
     if zp and Path(zp).exists():
-        if not st.session_state.zip_bytes:
+        # BUG-002/ZIP-002: validate without loading all bytes into memory;
+        # stream the file directly to the download button instead of
+        # caching the full bytes in session_state.
+        if not st.session_state.get("zip_path"):
             try:
-                import io as _io
-                with open(zp, "rb") as f:
-                    _raw = f.read()
-                zipfile.ZipFile(_io.BytesIO(_raw)).close()   # validate before serving
-                st.session_state.zip_bytes = _raw
+                with zipfile.ZipFile(zp) as _zf:
+                    _bad = _zf.testzip()
+                if _bad is not None:
+                    raise zipfile.BadZipFile(f"corrupted entry: {_bad}")
+                st.session_state.zip_path = zp  # store path, not bytes
             except zipfile.BadZipFile:
                 st.error("⚠️ The ZIP file was corrupted (server may have restarted mid-write). "
                          "Click **🔄 New Run** in the sidebar to process again.")
-                st.session_state.job_id = None
+                st.session_state.job_id  = None
+                st.session_state.zip_path = None
                 st.query_params.clear()
             except Exception as e:
-                st.error(f"Could not load ZIP: {e}")
+                _log.exception("ZIP validation error")
+                st.error("Could not validate the output ZIP. Please try again or contact your administrator.")
 
-        if st.session_state.zip_bytes:
-            mb = len(st.session_state.zip_bytes) / 1024 / 1024
+        if st.session_state.get("zip_path") and Path(st.session_state.zip_path).exists():
+            mb = os.path.getsize(st.session_state.zip_path) / 1024 / 1024
             st.success(f"✅  Done — {mb:.1f} MB ZIP ready")
             if st.download_button(f"⬇  Download ZIP  ({mb:.1f} MB)",
-                                  data=st.session_state.zip_bytes,
+                                  data=open(st.session_state.zip_path, "rb"),
                                   file_name="psydox_processed.zip",
                                   mime="application/zip",
                                   use_container_width=True):
@@ -629,9 +665,10 @@ elif job.get("results"):
                     shutil.rmtree(str(_job_dir(job_id)), ignore_errors=True)
                 except Exception: pass
                 st.session_state.zip_bytes   = None
+                st.session_state.zip_path    = None
                 st.session_state.job_id      = None
                 st.session_state.excel_bytes = None
-                del _JOBS[job_id]
+                _JOBS.pop(job_id, None)  # BUG-003: pop instead of del — never raises KeyError
                 st.query_params.clear()
                 gc.collect()
 
@@ -724,7 +761,7 @@ if previews:
     with cb:
         # e[5] = actual original dims (added after thumbnail shrink); fall back to thumb size
         bw, bh = e[5] if len(e) > 5 else e[0].size
-        bg = gcd(bw, bh)
+        bg = gcd(bw, bh) or 1  # BUG-008: guard against ZeroDivisionError when dim is 0
         st.markdown(f"**ORIGINAL** — <span style='color:#ff4444;font-size:22px'><b>{e[2]}%</b></span>",
                     unsafe_allow_html=True)
         st.image(e[0], use_container_width=True)
@@ -732,7 +769,7 @@ if previews:
     with ca:
         # e[6] = actual output dims (the real saved file size, not the thumbnail)
         aw, ah = e[6] if len(e) > 6 else e[1].size
-        ag = gcd(aw, ah)
+        ag = gcd(aw, ah) or 1  # BUG-008: guard against ZeroDivisionError when dim is 0
         st.markdown(f"**PROCESSED** — <span style='color:#00cc66;font-size:22px'><b>{e[3]}%</b></span>",
                     unsafe_allow_html=True)
         st.image(e[1], use_container_width=True)

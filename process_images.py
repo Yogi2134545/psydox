@@ -246,7 +246,12 @@ def download_image(url: str, dest_folder: Path, cfg: dict) -> Path | None:
                 log.debug(f"    ✓ cache hit → {dest.name}")
                 return dest
             except Exception:
-                pass  # cache copy failed — fall through to re-download
+                # Source file was deleted (e.g. _safe_unlink after load) — evict stale entry
+                with _cache_lck:
+                    _cache.pop(direct_url, None)
+                try: dest.unlink(missing_ok=True)
+                except Exception: pass
+                # Fall through to re-download
 
     for attempt in range(1, cfg["MAX_RETRIES"] + 1):
         try:
@@ -258,6 +263,7 @@ def download_image(url: str, dest_folder: Path, cfg: dict) -> Path | None:
                 raw_wait = int(resp.headers.get("Retry-After", 5))
                 wait = min(raw_wait, 15) + random.uniform(1, 3)  # cap at 15s max
                 log.warning(f"    {resp.status_code} rate limited (attempt {attempt}) — waiting {wait:.1f}s (server asked {raw_wait}s)")
+                resp.close()
                 time.sleep(wait)
                 continue
 
@@ -265,6 +271,7 @@ def download_image(url: str, dest_folder: Path, cfg: dict) -> Path | None:
             if resp.status_code in (403, 404, 410, 451):
                 log.error(f"    ✗ HTTP {resp.status_code} (won't retry): {url[:80]}")
                 fail_code = f"FAIL:HTTP_{resp.status_code}"
+                resp.close()
                 if _cache is not None and _cache_lck is not None:
                     with _cache_lck:
                         _cache[direct_url] = fail_code
@@ -288,6 +295,7 @@ def download_image(url: str, dest_folder: Path, cfg: dict) -> Path | None:
                 else:
                     log.error(f"    ✗ got HTML page instead of image: {url[:80]}")
                     fail_code = "FAIL:HTML_RESPONSE"
+                resp.close()
                 if _cache is not None and _cache_lck is not None:
                     with _cache_lck:
                         _cache[direct_url] = fail_code
@@ -300,14 +308,29 @@ def download_image(url: str, dest_folder: Path, cfg: dict) -> Path | None:
                 raw_name += ext
             dest = unique_filename(dest_folder, raw_name)
 
-            _dl_start = time.monotonic()
-            _MAX_DL   = cfg.get("MAX_DOWNLOAD_SECS", 120)
-            with open(dest, "wb") as f:
-                for chunk in resp.iter_content(65536):
-                    if chunk:
-                        f.write(chunk)
-                    if time.monotonic() - _dl_start > _MAX_DL:
-                        raise TimeoutError(f"download exceeded {_MAX_DL}s total limit")
+            _dl_start      = time.monotonic()
+            _MAX_DL        = cfg.get("MAX_DOWNLOAD_SECS", 120)
+            _MAX_FILE_BYTES = cfg.get("MAX_FILE_BYTES", 50 * 1024 * 1024)  # 50 MB default
+            # Pre-check Content-Length when present
+            _cl = resp.headers.get("Content-Length")
+            if _cl and int(_cl) > _MAX_FILE_BYTES:
+                resp.close()
+                raise ValueError(f"Content-Length {_cl} exceeds {_MAX_FILE_BYTES} byte limit")
+            _bytes_written = 0
+            try:
+                with open(dest, "wb") as f:
+                    for chunk in resp.iter_content(8192):  # smaller chunks so deadline fires often
+                        if time.monotonic() - _dl_start > _MAX_DL:
+                            raise TimeoutError(f"download exceeded {_MAX_DL}s total limit")
+                        if chunk:
+                            f.write(chunk)
+                            _bytes_written += len(chunk)
+                            if _bytes_written > _MAX_FILE_BYTES:
+                                raise ValueError(f"download exceeds {_MAX_FILE_BYTES} byte limit")
+            except Exception:
+                try: dest.unlink(missing_ok=True)
+                except Exception: pass
+                raise
 
             log.debug(f"    ✓ downloaded → {dest.name}")
             if _cache is not None and _cache_lck is not None:
@@ -331,7 +354,13 @@ def copy_local(src: str, dest_folder: Path) -> Path | None:
     if p.suffix.lower() not in SUPPORTED_EXT:
         log.warning(f"    ✗ unsupported format: {src}");  return None
     dest = unique_filename(dest_folder, p.name)
-    shutil.copy2(p, dest)
+    try:
+        shutil.copy2(p, dest)
+    except Exception as e:
+        log.error(f"    ✗ copy failed {src}: {e}")
+        try: dest.unlink(missing_ok=True)
+        except Exception: pass
+        return None
     # Strip read-only bit so we can delete the temp copy later
     try:
         dest.chmod(dest.stat().st_mode | _stat.S_IWRITE)
@@ -816,8 +845,13 @@ def _process_one(args):
 
     # ── Open image ────────────────────────────────────────────────────────────
     try:
+        from PIL import ImageOps as _ImageOps
         with Image.open(raw) as im:
+            _MAX_PIXELS = 40_000_000  # ~6000×6700, well above any retail image
+            if im.width * im.height > _MAX_PIXELS:
+                raise ValueError(f"Image too large: {im.width}×{im.height}")
             im.load()
+            im = _ImageOps.exif_transpose(im)  # fix phone-camera rotation
             img_copy = im.convert("RGB")
     except Exception as e:
         log.error(f"  ✗ open error {raw.name}: {e}")
@@ -849,7 +883,12 @@ def _process_one(args):
 
     # ── Force EXACT target size — fix any 1-2px rounding from int arithmetic ─
     if processed.size != (TW, TH):
-        processed = processed.resize((TW, TH), Image.LANCZOS)
+        try:
+            processed = processed.resize((TW, TH), Image.LANCZOS)
+        except Exception as e:
+            log.error(f"  ✗ final resize failed: {e}")
+            result.update(status=f"FAILED_CONVERT: {e}", is_skipped=True)
+            return result
 
     # ── Preview thumbnails ────────────────────────────────────────────────────
     if _preview_queue.qsize() < cfg.get("_max_previews", 50):
@@ -863,8 +902,7 @@ def _process_one(args):
             thumb_before = img_copy.copy();  thumb_before.thumbnail((400, 600))
             thumb_after  = processed.copy(); thumb_after.thumbnail((400, 600))
             _preview_queue.put_nowait((thumb_before, thumb_after,
-                                       before_score, after_score, src_fmt,
-                                       actual_before_size, actual_after_size))
+                                       before_score, after_score, src_fmt))
         except Exception:
             pass
 
@@ -955,7 +993,15 @@ def process_all(cfg: dict,
             if stop_event and stop_event.is_set():
                 pool.shutdown(wait=False, cancel_futures=True)
                 break
-            res        = fut.result()
+            try:
+                res = fut.result()
+            except Exception as exc:
+                log.error(f"  worker raised unhandled exception: {exc}", exc_info=True)
+                failed_dl += 1
+                done      += 1
+                if progress_cb:
+                    progress_cb(done, total_images, _active_count[0], _started_count[0])
+                continue
             style_code = res["_style_code"]
             src        = res["_src"]
             report_rows.append(dict(style_code=style_code, source=src,
@@ -1540,6 +1586,8 @@ def launch_gui():
                 _add_preview(*_preview_queue.get_nowait())
         except queue.Empty:
             pass
+        except Exception:
+            pass
         root.after(500, poll_preview)
     root.after(500, poll_preview)
 
@@ -1583,7 +1631,7 @@ def launch_gui():
         def worker():
             try:
                 res = process_all(cfg,
-                                  progress_cb=lambda d,t: root.after(0, on_progress, d, t),
+                                  progress_cb=lambda d,t,_a=0,_s=0: root.after(0, on_progress, d, t),
                                   stop_event=_stop_event)
                 root.after(0, on_done, res)
             except Exception as ex:
