@@ -238,11 +238,21 @@ def download_image(url: str, dest_folder: Path, cfg: dict) -> Path | None:
             resp.raise_for_status()
             ct = resp.headers.get("Content-Type", "")
             if "text/html" in ct:
+                snippet = ""
+                try:
+                    snippet = resp.content[:2000].decode("utf-8", errors="ignore").lower()
+                except Exception:
+                    pass
                 if "dropbox.com" in direct_url or "dropboxusercontent.com" in direct_url:
-                    log.error(f"    ✗ Dropbox blocked server download (session token expired or access restricted): {url[:80]}")
+                    if "file deleted" in snippet or "this link no longer works" in snippet:
+                        log.error(f"    ✗ Dropbox file deleted: {url[:80]}")
+                        return "FAIL:DROPBOX_DELETED"
+                    else:
+                        log.error(f"    ✗ Dropbox blocked server download (link private or expired): {url[:80]}")
+                        return "FAIL:DROPBOX_BLOCKED"
                 else:
                     log.error(f"    ✗ got HTML page instead of image: {url[:80]}")
-                return None
+                    return "FAIL:HTML_RESPONSE"
 
             ext      = guess_extension(direct_url, ct)
             raw_name = unquote(Path(urlparse(direct_url).path).name or hashlib.md5(url.encode()).hexdigest())
@@ -726,8 +736,9 @@ def _process_one(args):
     log.debug(f"  [{idx}/{total_src}] {source[:90]}")
 
     raw = collect_image(source, folder, cfg)
-    if raw is None:
-        result.update(status="FAILED_DOWNLOAD", is_failed_dl=True)
+    if raw is None or isinstance(raw, str):
+        status = raw if isinstance(raw, str) else "FAILED_DOWNLOAD"
+        result.update(status=status, is_failed_dl=True)
         return result
 
     def _safe_unlink(p):

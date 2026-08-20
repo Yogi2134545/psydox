@@ -586,7 +586,11 @@ elif job.get("results"):
     c3.metric("✗ Failed DL", failed)
     c4.metric("⚠ Skipped",   skipped)
     if failed > 0 or skipped > 0:
-        st.warning(f"⚠️ {failed} images failed to download, {skipped} skipped. Only successful images are in the ZIP.")
+        st.warning(
+            f"⚠️ {failed} image(s) failed to download, {skipped} skipped. "
+            "Only successful images are in the ZIP. "
+            "Download the **Failed Excel** below to see which rows failed and the specific reason."
+        )
 
     # Switch URL to ?zip= once done
     if job_id and st.query_params.get("zip") != job_id:
@@ -644,6 +648,9 @@ elif job.get("results"):
                             _rr = _rxb(_eb)
                             def _reason(s):
                                 if s == "FAILED_DOWNLOAD": return "Download failed"
+                                if s == "FAIL:DROPBOX_DELETED": return "Dropbox file deleted — re-upload and reshare"
+                                if s == "FAIL:DROPBOX_BLOCKED": return "Dropbox link private or expired — set to 'Anyone with link'"
+                                if s == "FAIL:HTML_RESPONSE": return "URL returned a webpage, not an image"
                                 if s.startswith("FAILED_OPEN"): return "Could not open image"
                                 if s == "FAILED_SAVE": return "Could not save image"
                                 if s.startswith("FAILED_CONVERT"): return "Image conversion failed"
@@ -676,7 +683,12 @@ elif job.get("results"):
                     )
     else:
         if not job.get("running"):
-            st.warning("No output images — check your Excel URLs are publicly accessible.")
+            st.warning(
+                "No output images — all downloads failed. "
+                "**Common causes:** Dropbox files deleted or moved, links set to private "
+                "(must be 'Anyone with the link'), or URLs require login. "
+                "Download the Failed Excel below to see which rows failed and why."
+            )
 
     st.markdown("---")
 
