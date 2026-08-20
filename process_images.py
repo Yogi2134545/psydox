@@ -70,7 +70,7 @@ except ImportError:
 #  LOGGING — dual handler: file + queue (GUI reads from queue)
 # ══════════════════════════════════════════════════════════════════════════════
 _log_queue: queue.Queue = queue.Queue()
-_preview_queue: queue.Queue = queue.Queue()   # (before_pil, after_pil, before_score, after_score)
+_preview_queue: queue.Queue = queue.Queue(maxsize=50)  # cap at 50; put_nowait drops when full
 
 class _QueueHandler(logging.Handler):
     def emit(self, record):
