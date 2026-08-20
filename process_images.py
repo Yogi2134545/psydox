@@ -292,10 +292,14 @@ def download_image(url: str, dest_folder: Path, cfg: dict) -> Path | None:
                 raw_name += ext
             dest = unique_filename(dest_folder, raw_name)
 
+            _dl_start = time.monotonic()
+            _MAX_DL   = cfg.get("MAX_DOWNLOAD_SECS", 60)
             with open(dest, "wb") as f:
                 for chunk in resp.iter_content(65536):
                     if chunk:
                         f.write(chunk)
+                    if time.monotonic() - _dl_start > _MAX_DL:
+                        raise TimeoutError(f"download exceeded {_MAX_DL}s total limit")
 
             log.debug(f"    ✓ downloaded → {dest.name}")
             if _cache is not None and _cache_lck is not None:
@@ -752,7 +756,7 @@ def build_pack_image(pil_images: list, cfg: dict) -> Image.Image:
 #  8.  ORCHESTRATOR (parallel workers — download + process simultaneously)
 # ══════════════════════════════════════════════════════════════════════════════
 import os as _os
-_WORKERS = 8   # 8 workers — Dropbox rate-limits above ~8 simultaneous connections
+_WORKERS = 5   # 5 workers — balance throughput vs CDN rate-limiting
 
 def _process_one(args):
     """Process a single image: download → convert → force exact size → save.
