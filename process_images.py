@@ -177,6 +177,11 @@ def _resolve_url(url: str) -> str:
     m = re.search(r'drive\.google\.com/open\?id=([A-Za-z0-9_-]+)', url)
     if m:
         return f"https://drive.google.com/uc?export=download&id={m.group(1)}"
+    # Google Drive: /uc?id=<ID>  →  add export=download
+    if 'drive.google.com/uc' in url and 'export=download' not in url:
+        m = re.search(r'[?&]id=([A-Za-z0-9_-]+)', url)
+        if m:
+            return f"https://drive.google.com/uc?export=download&id={m.group(1)}"
 
     # Dropbox — old (/s/), new file (/scl/fi/), and folder-preview (/scl/fo/) links
     if 'dropbox.com' in url or 'dropboxusercontent.com' in url:
@@ -293,7 +298,7 @@ def download_image(url: str, dest_folder: Path, cfg: dict) -> Path | None:
             dest = unique_filename(dest_folder, raw_name)
 
             _dl_start = time.monotonic()
-            _MAX_DL   = cfg.get("MAX_DOWNLOAD_SECS", 60)
+            _MAX_DL   = cfg.get("MAX_DOWNLOAD_SECS", 120)
             with open(dest, "wb") as f:
                 for chunk in resp.iter_content(65536):
                     if chunk:
@@ -333,9 +338,13 @@ def copy_local(src: str, dest_folder: Path) -> Path | None:
     return dest
 
 def collect_image(source: str, dest_folder: Path, cfg: dict) -> Path | None:
-    if source.startswith(("http://", "https://")):
-        return download_image(source, dest_folder, cfg)
-    return copy_local(source, dest_folder)
+    s = source.strip()
+    if not s or s.lower() in ("nan", "none", "0"):
+        log.warning(f"    ✗ skipping non-URL value: {s[:60]}")
+        return "FAIL:INVALID_URL"
+    if s.startswith(("http://", "https://")):
+        return download_image(s, dest_folder, cfg)
+    return copy_local(s, dest_folder)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

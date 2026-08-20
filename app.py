@@ -176,16 +176,14 @@ def _worker(job_id, cfg, out_dir):
                      if f.is_file() and f.suffix.lower() in (".jpg",".jpeg",".png",".webp")]
         zip_path = None
         if out_files:
-            # Build ZIP in memory first — writing to disk mid-stream can leave a
-            # corrupt file if the process is killed before the central directory
-            # is flushed.  Writing the completed bytes in one shot is safer.
-            import io as _io
-            _zbuf = _io.BytesIO()
-            with zipfile.ZipFile(_zbuf, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
+            # Write ZIP directly to a .tmp file then rename — avoids loading
+            # all images into memory at once (OOM risk on large batches).
+            zp  = Path(out_dir) / "_psydox_output.zip"
+            ztmp = Path(out_dir) / "_psydox_output.zip.tmp"
+            with zipfile.ZipFile(ztmp, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
                 for f in out_files:
                     zf.write(f, f.relative_to(out_dir))
-            zp = Path(out_dir) / "_psydox_output.zip"
-            zp.write_bytes(_zbuf.getvalue())
+            ztmp.rename(zp)
             zip_path = str(zp)
 
         _JOBS[job_id]["zip_path"] = zip_path
@@ -536,36 +534,34 @@ if run_btn and have_file and not is_run:
 job_id = st.session_state.job_id
 job    = _read_job(job_id) if job_id else {}
 
-# Only poll while the job is actively running or until the completion rerun
-# fires once.  After results are shown, stop the fragment entirely so its
-# periodic 2-second reruns cannot race with a subsequent file-upload drop.
-_poll_needed = job_id and (
-    job.get("running") or
-    not st.session_state.get("_shown_" + (job_id or ""))
-)
+# Always define _poll so Streamlit's scheduler can always find the fragment.
+# The "does not exist" error spam happens when the fragment is defined inside
+# a conditional — after st.rerun() the conditional becomes False, Streamlit
+# removes the fragment, but the run_every timer still fires → error flood.
+@st.fragment(run_every=2)
+def _poll():
+    try:
+        jid = st.session_state.get("job_id", "")
+        if not jid:
+            return
+        j = _read_job(jid)
+        # Stop polling once results have been shown
+        if not j.get("running") and st.session_state.get("_shown_" + jid):
+            return
+        if j.get("running"):
+            done   = j.get("done",   0)
+            total  = j.get("total",  0)
+            active = j.get("active", 0)
+            pct    = done / total if total > 0 else 0
+            label  = f"✅  {done} / {total} done — {int(pct*100)}%  |  ⬇️ {active} downloading now"
+            st.progress(pct, text=label)
+        elif (j.get("results") or j.get("error")) and not st.session_state.get("_shown_" + jid):
+            st.session_state["_shown_" + jid] = True
+            st.rerun(scope="app")
+    except Exception:
+        pass
 
-if _poll_needed:
-    @st.fragment(run_every=2)
-    def _poll():
-        try:
-            jid = st.session_state.job_id
-            if not jid:
-                return
-            j = _read_job(jid)
-            if j.get("running"):
-                done   = j.get("done",   0)
-                total  = j.get("total",  0)
-                active = j.get("active", 0)
-                pct    = done / total if total > 0 else 0
-                label  = f"✅  {done} / {total} done — {int(pct*100)}%  |  ⬇️ {active} downloading now"
-                st.progress(pct, text=label)
-            elif (j.get("results") or j.get("error")) and not st.session_state.get("_shown_" + jid):
-                st.session_state["_shown_" + jid] = True
-                st.rerun(scope="app")
-        except Exception:
-            pass
-
-    _poll()
+_poll()
 
 # ═════════════════════════════════════════════════════════════════════════════
 #  RESULTS
@@ -651,6 +647,7 @@ elif job.get("results"):
                             _rr = _rxb(_eb)
                             def _reason(s):
                                 if s == "FAILED_DOWNLOAD": return "Download failed"
+                                if s == "FAIL:INVALID_URL": return "Cell is not a URL (skipped)"
                                 if s == "FAIL:DROPBOX_DELETED": return "Dropbox file deleted — re-upload and reshare"
                                 if s == "FAIL:DROPBOX_BLOCKED": return "Dropbox link private or expired — set to 'Anyone with link'"
                                 if s == "FAIL:HTML_RESPONSE": return "URL returned a webpage, not an image"
