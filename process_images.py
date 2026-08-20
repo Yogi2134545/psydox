@@ -40,7 +40,7 @@ BG_PRESETS = {
 }
 # ══════════════════════════════════════════════════════════════════════════════
 
-import os, re, csv, time, shutil, logging, hashlib, threading, queue, sys
+import os, re, csv, time, shutil, logging, hashlib, threading, queue, sys, socket
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
@@ -224,10 +224,39 @@ def _resolve_url(url: str) -> str:
         return url.replace('redir?', 'download?').replace('embed?', 'download?')
     return url
 
+_SSRF_BLOCKED = re.compile(
+    r'^(localhost$|127\.|\.local$|169\.254\.|'
+    r'10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|'
+    r'::1|0\.0\.0\.0|metadata\.google\.internal|'
+    r'instance-data)', re.IGNORECASE)
+
+def _validate_url_safe(url: str) -> None:
+    """Raise ValueError if URL targets an internal/metadata host."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ('http', 'https'):
+        raise ValueError(f"Only http/https URLs allowed: {parsed.scheme!r}")
+    host = (parsed.hostname or "").lower()
+    if _SSRF_BLOCKED.match(host):
+        raise ValueError(f"Blocked — internal/metadata host: {host!r}")
+
+
 def download_image(url: str, dest_folder: Path, cfg: dict) -> Path | None:
     import random
     from urllib.parse import unquote
+
+    try:
+        _validate_url_safe(url)
+    except ValueError as _ve:
+        log.warning(f"    ✗ SSRF blocked: {_ve}")
+        return "FAIL:SSRF_BLOCKED"
+
     direct_url = _resolve_url(url)
+
+    try:
+        _validate_url_safe(direct_url)
+    except ValueError as _ve:
+        log.warning(f"    ✗ SSRF blocked (resolved URL): {_ve}")
+        return "FAIL:SSRF_BLOCKED"
 
     # Check URL cache — if this exact URL was already downloaded in this job,
     # copy the cached file to dest_folder instead of hitting the CDN again.
@@ -376,6 +405,11 @@ def collect_image(source: str, dest_folder: Path, cfg: dict) -> Path | None:
         return "FAIL:INVALID_URL"
     if s.startswith(("http://", "https://")):
         return download_image(s, dest_folder, cfg)
+    # Local file access is disabled by default; only the GUI/CLI sets ALLOW_LOCAL_FILES=True.
+    # The Streamlit web app never enables it, preventing arbitrary server-side file reads.
+    if not cfg.get("ALLOW_LOCAL_FILES", False):
+        log.warning(f"    ✗ local file paths not allowed in this context: {s[:80]}")
+        return "FAIL:LOCAL_PATH_NOT_ALLOWED"
     return copy_local(s, dest_folder)
 
 

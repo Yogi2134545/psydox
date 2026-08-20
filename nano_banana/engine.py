@@ -1,6 +1,7 @@
 """Nano Banana — main orchestrator engine."""
 import io
 import logging
+import shutil
 import traceback
 from pathlib import Path
 from typing import Callable, Optional
@@ -158,7 +159,7 @@ class NanoBananaEngine:
         import tempfile
 
         results = {"total": 0, "success": 0, "failed": 0, "skipped": 0}
-        processed_images = []
+        processed_items = []  # list of (label: str, img_bytes: bytes)
 
         try:
             wb = openpyxl.load_workbook(excel_path, read_only=True)
@@ -203,7 +204,11 @@ class NanoBananaEngine:
                         src_img = Image.open(io.BytesIO(resp.content)).convert("RGB")
                         if n_angles <= 1:
                             result_img = self.process_single(src_img, config)
-                            processed_images.append((f"{style_code}.jpg", result_img))
+                            buf = io.BytesIO()
+                            result_img.save(buf, format="JPEG", quality=90)
+                            result_img.close()
+                            del result_img
+                            processed_items.append((f"{style_code}.jpg", buf.getvalue()))
                             results["success"] += 1
                         else:
                             ref_buf = io.BytesIO()
@@ -215,9 +220,9 @@ class NanoBananaEngine:
                             )
                             for ai, ab in enumerate(angle_bytes_list):
                                 if ab is not None:
-                                    angle_img = Image.open(io.BytesIO(ab)).convert("RGB")
-                                    processed_images.append(
-                                        (f"{style_code}_angle{ai + 1}.jpg", angle_img)
+                                    # ab is already bytes from generate_angles — no PIL object needed
+                                    processed_items.append(
+                                        (f"{style_code}_angle{ai + 1}.jpg", ab)
                                     )
                                     results["success"] += 1
                                 else:
@@ -233,12 +238,16 @@ class NanoBananaEngine:
             return results
 
         # Build ZIP
-        if processed_images:
-            zip_buf = self.exporter.batch_to_zip(processed_images, fmt="JPEG", quality=90)
-            # Save to temp file
-            tmp = Path(tempfile.mkdtemp()) / "nb_batch_output.zip"
-            tmp.write_bytes(zip_buf)
-            results["zip_path"] = str(tmp)
-            results["zip_bytes"] = zip_buf
+        if processed_items:
+            zip_buf = self.exporter.batch_to_zip(processed_items, fmt="JPEG", quality=90)
+            # Save to temp file; clean up the dir regardless of write outcome
+            tmpdir = Path(tempfile.mkdtemp())
+            try:
+                tmp = tmpdir / "nb_batch_output.zip"
+                tmp.write_bytes(zip_buf)
+                results["zip_path"] = str(tmp)
+                results["zip_bytes"] = zip_buf
+            finally:
+                shutil.rmtree(tmpdir, ignore_errors=True)
 
         return results

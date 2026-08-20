@@ -46,7 +46,11 @@ class Exporter:
                     img = item
                 if not name.endswith(f".{ext}"):
                     name = f"{name}.{ext}"
-                img_bytes = self.to_bytes(img, fmt, quality)
-                zf.writestr(name, img_bytes)
+                # Accept pre-encoded bytes directly to avoid redundant PIL round-trip
+                if isinstance(img, (bytes, bytearray)):
+                    zf.writestr(name, img)
+                else:
+                    img_bytes = self.to_bytes(img, fmt, quality)
+                    zf.writestr(name, img_bytes)
 
         return buf.getvalue()

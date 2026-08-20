@@ -53,31 +53,38 @@ def _get_jobs() -> dict:
     return {}
 
 _JOBS = _get_jobs()   # same dict object every run — never wiped by st.rerun()
+# FIX-3: RLock guards _JOBS from concurrent mutations by worker threads and
+# the Streamlit polling fragment running in separate threads.
+_JOBS_LOCK = threading.RLock()
 
 def _job_dir(jid):  return Path(tempfile.gettempdir()) / f"psydox_{jid}"
 def _status_file(jid): return _job_dir(jid) / "status.json"
 
 def _read_job(jid):
     """Return live status dict — memory first, then disk."""
-    if jid in _JOBS:
-        return _JOBS[jid]
+    with _JOBS_LOCK:
+        if jid in _JOBS:
+            return _JOBS[jid]
     f = _status_file(jid)
     if f.exists():
         try:
             d = json.loads(f.read_text())
-            _JOBS[jid] = d
+            with _JOBS_LOCK:
+                _JOBS[jid] = d
             return d
         except Exception:
             pass
     return {}
 
 def _flush_job(jid):
-    """Write current memory state to disk (skip non-serialisable previews)."""
+    """Write current memory state to disk (skip non-serialisable keys)."""
     try:
-        safe = {k: v for k, v in _JOBS[jid].items() if k != "previews"}
+        with _JOBS_LOCK:
+            safe = {k: v for k, v in _JOBS[jid].items()
+                    if k not in ("previews", "stop_event")}
         _status_file(jid).write_text(json.dumps(safe))
     except Exception:
-        pass
+        _log.exception("_flush_job failed for job %s", jid)
 
 # ── Auth ─────────────────────────────────────────────────────────────────────
 # Legacy users.yaml kept for reference only — AuthService migrates it to DB on startup.
@@ -162,7 +169,7 @@ if st.session_state.job_id:
 # ═════════════════════════════════════════════════════════════════════════════
 #  BACKGROUND WORKER
 # ═════════════════════════════════════════════════════════════════════════════
-def _worker(job_id, cfg, out_dir):
+def _worker(job_id, cfg, out_dir, stop_event=None):
     try:
         def _cb(done, total, active=0, started=0):
             _JOBS[job_id]["done"]    = done
@@ -180,7 +187,7 @@ def _worker(job_id, cfg, out_dir):
             if done % 10 == 0:
                 _flush_job(job_id)
 
-        res = process_all(cfg, progress_cb=_cb)
+        res = process_all(cfg, progress_cb=_cb, stop_event=stop_event)
 
         try:
             while True:
@@ -198,7 +205,7 @@ def _worker(job_id, cfg, out_dir):
             ztmp = Path(out_dir) / "_psydox_output.zip.tmp"
             with zipfile.ZipFile(ztmp, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
                 for f in out_files:
-                    zf.write(f, f.relative_to(out_dir))
+                    zf.write(f, f.relative_to(out_dir).as_posix())
             ztmp.rename(zp)
             zip_path = str(zp)
 
@@ -537,6 +544,11 @@ with st.sidebar:
     # New Run — always visible when a job exists
     if st.session_state.job_id:
         if st.button("🔄  New Run", use_container_width=True):
+            # FIX-2: signal the old worker to abort before clearing session state
+            _old_jid = st.session_state.job_id
+            _old_ev = (_JOBS.get(_old_jid) or {}).get("stop_event")
+            if _old_ev is not None:
+                _old_ev.set()
             st.session_state.job_id    = None
             st.session_state.zip_bytes = None
             st.session_state.zip_path  = None
@@ -574,12 +586,16 @@ if run_btn and have_file and not is_run:
         USE_REMBG=False, BG_GREY=int(bggrey), BG_RGB=bgrgb, PACK_MODE=pack,
     )
 
-    _JOBS[job_id] = {"running": True, "done": 0, "total": 0, "started": 0, "active": 0,
-                     "results": None, "error": None, "zip_path": None, "previews": [],
-                     # BUG-007/SEC-005: record owner so URL recovery can enforce isolation
-                     "owner": st.session_state.get("user_id", ""),
-                     # BUG-005: record start time for hung-job watchdog in _poll
-                     "started_at": time.time()}
+    _stop_ev = threading.Event()
+    with _JOBS_LOCK:
+        _JOBS[job_id] = {"running": True, "done": 0, "total": 0, "started": 0, "active": 0,
+                         "results": None, "error": None, "zip_path": None, "previews": [],
+                         # BUG-007/SEC-005: record owner so URL recovery can enforce isolation
+                         "owner": st.session_state.get("user_id", ""),
+                         # BUG-005: record start time for hung-job watchdog in _poll
+                         "started_at": time.time(),
+                         # FIX-2: cancellation event for orphan worker
+                         "stop_event": _stop_ev}
     _flush_job(job_id)
 
     st.session_state.job_id    = job_id
@@ -588,7 +604,7 @@ if run_btn and have_file and not is_run:
     st.session_state.preview_idx = 0
     st.query_params["job"] = job_id
 
-    threading.Thread(target=_worker, args=(job_id, cfg, out_dir), daemon=True).start()
+    threading.Thread(target=_worker, args=(job_id, cfg, out_dir, _stop_ev), daemon=True).start()
     st.rerun()
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -668,7 +684,8 @@ elif job.get("results"):
                 st.session_state.zip_path    = None
                 st.session_state.job_id      = None
                 st.session_state.excel_bytes = None
-                _JOBS.pop(job_id, None)  # BUG-003: pop instead of del — never raises KeyError
+                with _JOBS_LOCK:
+                    _JOBS.pop(job_id, None)  # BUG-003: pop instead of del — never raises KeyError
                 st.query_params.clear()
                 gc.collect()
 
@@ -688,6 +705,8 @@ elif job.get("results"):
                             def _reason(s):
                                 if s == "FAILED_DOWNLOAD": return "Download failed"
                                 if s == "FAIL:INVALID_URL": return "Cell is not a URL (skipped)"
+                                if s == "FAIL:SSRF_BLOCKED": return "URL blocked — internal/metadata address not allowed"
+                                if s == "FAIL:LOCAL_PATH_NOT_ALLOWED": return "Local file paths are not allowed in web mode"
                                 if s == "FAIL:DROPBOX_DELETED": return "Dropbox file deleted — re-upload and reshare"
                                 if s == "FAIL:DROPBOX_BLOCKED": return "Dropbox link private or expired — set to 'Anyone with link'"
                                 if s == "FAIL:HTML_RESPONSE": return "URL returned a webpage, not an image"

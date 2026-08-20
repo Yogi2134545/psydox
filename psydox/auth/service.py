@@ -275,22 +275,17 @@ class AuthService:
             self._audit(norm_email, "login_failed", detail="unknown email")
             return AuthResult.fail(_GENERIC, "INVALID_CREDENTIALS")
 
-        # Non-owner users seeded from users.yaml arrive with password_hash="".
-        # Accept the first submitted password as their password so they can log in
-        # immediately after a Railway redeploy (which wipes the DB and re-seeds from yaml).
+        # SEC-001 FIX: Non-owner users seeded from users.yaml arrive with password_hash="".
+        # We must NOT accept the first submitted password as their permanent password —
+        # doing so lets any attacker who knows a victim email permanently own that account.
+        # Instead, block login and require an admin to set the password via a secure flow.
         if not _is_owner_login and not (user.password_hash or "").startswith("$2b$"):
-            try:
-                pw_hash = self._pw.hash(password)
-                self._repo.update_password_hash(user.id, pw_hash)
-                # Re-fetch so the password check below uses the new hash
-                user = self._repo.get_by_email(norm_email)
-                _log.info("User %s password set on first login (yaml-seeded account)", norm_email)
-            except Exception as _boot_err:
-                _log.error("User bootstrap failed for %s: %s", norm_email, _boot_err)
-                return AuthResult.fail(
-                    "Account setup failed. Please contact your administrator.",
-                    "BOOTSTRAP_FAILED",
-                )
+            self._audit(norm_email, "login_failed", detail="account not activated (empty password_hash)")
+            _log.warning("Login blocked for %s: account not activated (yaml-seeded, no password set)", norm_email)
+            return AuthResult.fail(
+                "Account not yet activated. Please contact the administrator to set your password.",
+                "NOT_ACTIVATED",
+            )
 
         # Account state checks
         if user.status == AccountStatus.DISABLED:

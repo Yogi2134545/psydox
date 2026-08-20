@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 from typing import Any
 
 import streamlit as st
@@ -259,6 +260,12 @@ def render_studio(
     start_tool: str | None = None,
 ) -> None:
     """Render the full Psydox Studio workspace."""
+    _owner_email = os.environ.get("OWNER_EMAIL", "").strip()
+    if _owner_email and user_email != _owner_email:
+        st.error("Access denied. AI Studio is available to authorized users only.")
+        st.stop()
+        return
+
     _ensure_state()
     _inject_css()
 

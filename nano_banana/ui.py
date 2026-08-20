@@ -22,6 +22,7 @@ from .engine import NanoBananaEngine
 from .history import HistoryManager
 from .export import Exporter
 from .prompt_builder import build_from_preset
+from .validators import validate_image_upload
 
 
 # ── Session state helpers ─────────────────────────────────────────────────────
@@ -490,7 +491,13 @@ def render_nano_banana():
             label_visibility="visible",
         )
         if up:
-            img = Image.open(up).convert("RGB")
+            _up_bytes = up.getvalue()
+            try:
+                validate_image_upload(_up_bytes, up.name)
+            except ValueError as _ve:
+                st.error(f"Invalid file: {_ve}")
+                st.stop()
+            img = Image.open(io.BytesIO(_up_bytes)).convert("RGB")
             st.session_state.nb_uploaded_image = img
 
     with col_url:

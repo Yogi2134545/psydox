@@ -118,8 +118,8 @@ class AIEditor:
                     norm = norm + v * (norm - 0.5)
             elif tone_type == "shadows":
                 if norm < 0.5:
-                    norm = norm + v * (0.5 - norm) * (-1 if v > 0 else 1) * (-1)
-                    norm = max(0, norm + v * (0.5 - norm))
+                    # positive v lifts shadows, negative v crushes them
+                    norm = max(0.0, norm + v * (0.5 - norm))
             elif tone_type == "whites":
                 norm = norm + v * (norm ** 2)
             elif tone_type == "blacks":
