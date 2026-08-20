@@ -663,20 +663,19 @@ def remove_grid_lines(img: Image.Image) -> Image.Image:
 #  6.  MAIN CONVERSION  (smart-crop first, extend if needed)
 # ══════════════════════════════════════════════════════════════════════════════
 def convert_to_4_5(img: Image.Image, cfg: dict) -> Image.Image:
-    from psydox.batch.processor import _letterbox_place, _detect_background
-
     TW, TH = cfg["TARGET_W"], cfg["TARGET_H"]
     img = img.convert("RGB")
+    orig_w, orig_h = img.size
 
-    original_bg = _detect_background(img)
-    _bgr = cfg.get("BG_RGB")
-
-    if isinstance(_bgr, (list, tuple)) and len(_bgr) == 3:
-        bg_fill = tuple(int(c) for c in _bgr)
-        img = replace_mixed_background(img, cfg)
-        return _letterbox_place(img, TW, TH, original_bg, solid_bg_fill=bg_fill)
-
-    return _letterbox_place(img, TW, TH, original_bg, solid_bg_fill=None)
+    # Cover fill: scale so the image fills the entire target, then center-crop.
+    # No padding, no background bars — image content fills every pixel.
+    scale = min(max(TW / orig_w, TH / orig_h), 2.0)
+    nw = max(1, round(orig_w * scale))
+    nh = max(1, round(orig_h * scale))
+    scaled = img.resize((nw, nh), Image.LANCZOS)
+    left = (nw - TW) // 2
+    top  = (nh - TH) // 2
+    return scaled.crop((left, top, left + TW, top + TH))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
