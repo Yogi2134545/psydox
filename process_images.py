@@ -824,20 +824,21 @@ def _process_one(args):
         processed = processed.resize((TW, TH), Image.LANCZOS)
 
     # ── Preview thumbnails ────────────────────────────────────────────────────
-    try:
-        before_score = compute_quality_score(img_copy, TW, TH)
-        after_score  = compute_quality_score(processed, TW, TH)
-        src_fmt = (Path(source).suffix.lstrip(".").upper()
-                   if not source.startswith("http") else "URL")
-        actual_before_size = img_copy.size        # actual original dims (before thumbnail)
-        actual_after_size  = processed.size       # actual output dims (before thumbnail)
-        thumb_before = img_copy.copy();  thumb_before.thumbnail((400, 600))
-        thumb_after  = processed.copy(); thumb_after.thumbnail((400, 600))
-        _preview_queue.put_nowait((thumb_before, thumb_after,
-                                   before_score, after_score, src_fmt,
-                                   actual_before_size, actual_after_size))
-    except Exception:
-        pass
+    if _preview_queue.qsize() < cfg.get("_max_previews", 50):
+        try:
+            before_score = compute_quality_score(img_copy, TW, TH)
+            after_score  = compute_quality_score(processed, TW, TH)
+            src_fmt = (Path(source).suffix.lstrip(".").upper()
+                       if not source.startswith("http") else "URL")
+            actual_before_size = img_copy.size
+            actual_after_size  = processed.size
+            thumb_before = img_copy.copy();  thumb_before.thumbnail((400, 600))
+            thumb_after  = processed.copy(); thumb_after.thumbnail((400, 600))
+            _preview_queue.put_nowait((thumb_before, thumb_after,
+                                       before_score, after_score, src_fmt,
+                                       actual_before_size, actual_after_size))
+        except Exception:
+            pass
 
     # ── Save ──────────────────────────────────────────────────────────────────
     # Use a clean numeric filename so URL-derived stems (e.g. "view?usp=drive_link"
@@ -900,6 +901,7 @@ def process_all(cfg: dict,
     _url_cache_lock = _threading2.Lock()
     cfg["_url_cache"]      = _url_cache
     cfg["_url_cache_lock"] = _url_cache_lock
+    cfg["_max_previews"]   = 5 if total > 250 else 50
 
     import threading as _threading
     _started_count = [0]

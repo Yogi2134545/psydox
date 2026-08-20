@@ -151,18 +151,17 @@ except Exception as _auth_err:
 # ═════════════════════════════════════════════════════════════════════════════
 def _worker(job_id, cfg, out_dir):
     try:
-        _MAX_PREVIEWS = 100
         def _cb(done, total, active=0, started=0):
             _JOBS[job_id]["done"]    = done
             _JOBS[job_id]["total"]   = total
             _JOBS[job_id]["active"]  = active
             _JOBS[job_id]["started"] = started
+            _max_prev = cfg.get("_max_previews", 100)
             try:
                 while True:
                     _JOBS[job_id]["previews"].append(_preview_queue.get_nowait())
-                    # Keep only the most recent previews — PIL objects are ~1.4MB each
-                    if len(_JOBS[job_id]["previews"]) > _MAX_PREVIEWS:
-                        _JOBS[job_id]["previews"] = _JOBS[job_id]["previews"][-_MAX_PREVIEWS:]
+                    if len(_JOBS[job_id]["previews"]) > _max_prev:
+                        _JOBS[job_id]["previews"] = _JOBS[job_id]["previews"][-_max_prev:]
             except Exception:
                 pass
             if done % 10 == 0:
