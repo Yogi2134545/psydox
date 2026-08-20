@@ -729,317 +729,266 @@ def remove_grid_lines(img: Image.Image) -> Image.Image:
 # ══════════════════════════════════════════════════════════════════════════════
 def convert_to_4_5(img: Image.Image, cfg: dict) -> Image.Image:
     """
-    Smart e-commerce ratio conversion.
+    Exact-ratio smart framing for e-commerce images.
 
-    Rules:
-    - TARGET_W / TARGET_H are authoritative.
-    - Detect the actual product.
-    - Keep the complete product visible.
-    - Keep product around 84% of its useful frame.
-    - If the source does not contain enough background for the requested
-      aspect ratio, extend the existing background naturally.
-    - Never use grey letterbox/pillarbox padding.
-    - Never crop the product just to force the ratio.
-    - Final output is EXACTLY TARGET_W x TARGET_H.
+    IMPORTANT:
+    - Never crop the product merely to achieve the target ratio.
+    - Never create a flat grey/white canvas around the source.
+    - Preserve the complete source image whenever possible.
+    - When the target ratio requires extra space, create a soft
+      background continuation from the source edges.
+    - Final dimensions are ALWAYS exactly TARGET_W x TARGET_H.
     """
 
     TW = int(cfg["TARGET_W"])
     TH = int(cfg["TARGET_H"])
 
     if TW <= 0 or TH <= 0:
-        raise ValueError(
-            f"Invalid target dimensions: {TW}x{TH}"
-        )
+        raise ValueError(f"Invalid target dimensions: {TW}x{TH}")
 
     img = img.convert("RGB")
+    sw, sh = img.size
 
-    # --------------------------------------------------------
-    # Background handling
-    # --------------------------------------------------------
+    if sw <= 0 or sh <= 0:
+        raise ValueError(f"Invalid source dimensions: {sw}x{sh}")
 
-    # Only replace background when the user explicitly selected
-    # a specific RGB colour.
-    #
-    # "Auto" keeps the original background so that any extension
-    # blends naturally with the source image.
+    target_ratio = TW / TH
+    source_ratio = sw / sh
+
+    # Explicit background replacement remains supported.
     bgrgb = cfg.get("BG_RGB")
 
     if isinstance(bgrgb, (list, tuple)) and len(bgrgb) == 3:
         img = replace_mixed_background(img, cfg)
+        sw, sh = img.size
 
-    sw, sh = img.size
-
-    if sw <= 0 or sh <= 0:
-        raise ValueError(
-            f"Invalid source dimensions: {sw}x{sh}"
-        )
-
-    target_ratio = TW / TH
-
-    # --------------------------------------------------------
-    # Detect product
-    # --------------------------------------------------------
-
-    try:
-        x1, y1, x2, y2 = get_product_bbox(
-            img,
-            bool(cfg.get("USE_REMBG", False))
-        )
-
-        x1 = max(0, min(int(x1), sw - 1))
-        y1 = max(0, min(int(y1), sh - 1))
-        x2 = max(x1 + 1, min(int(x2), sw))
-        y2 = max(y1 + 1, min(int(y2), sh))
-
-    except Exception as exc:
-        log.warning(
-            f"Product bbox detection failed ({exc}); "
-            f"using full source."
-        )
-
-        x1, y1, x2, y2 = 0, 0, sw, sh
-
-    product_w = max(1, x2 - x1)
-    product_h = max(1, y2 - y1)
-
-    product_cx = (x1 + x2) / 2.0
-    product_cy = (y1 + y2) / 2.0
-
-    # --------------------------------------------------------
-    # Product occupancy
-    # --------------------------------------------------------
+    # ------------------------------------------------------------
+    # STEP 1
+    # Fit the COMPLETE source inside the target ratio.
     #
-    # Google Merchant Center recommends roughly 75-90%.
-    # 84% gives a professional catalogue framing.
-    #
+    # We intentionally use min(), never max(), because max()
+    # would enlarge/crop the source to fill the target.
+    # ------------------------------------------------------------
 
-    fill = 0.84
+    scale = min(TW / sw, TH / sh)
 
-    frame_w = product_w / fill
-    frame_h = product_h / fill
+    # Do not unnecessarily upscale tiny intermediate images.
+    scaled_w = max(1, int(round(sw * scale)))
+    scaled_h = max(1, int(round(sh * scale)))
 
-    # --------------------------------------------------------
-    # Expand frame to requested ratio.
-    #
-    # IMPORTANT:
-    # We EXPAND the frame.
-    # We do NOT shrink/crop the product.
-    # --------------------------------------------------------
-
-    if frame_w / frame_h > target_ratio:
-
-        # Product is relatively wide.
-        # Need additional height.
-        frame_h = frame_w / target_ratio
-
+    if (scaled_w, scaled_h) != (sw, sh):
+        source = img.resize(
+            (scaled_w, scaled_h),
+            Image.Resampling.LANCZOS
+        )
     else:
+        source = img.copy()
 
-        # Product is relatively tall.
-        # Need additional width.
-        frame_w = frame_h * target_ratio
+    sw, sh = source.size
 
-    # --------------------------------------------------------
-    # Determine background colour for natural extension
-    # --------------------------------------------------------
+    # ------------------------------------------------------------
+    # STEP 2
+    # Calculate exactly how much background is required.
+    # ------------------------------------------------------------
 
-    if isinstance(bgrgb, (list, tuple)) and len(bgrgb) == 3:
-
-        bg_rgb = tuple(
-            int(c) for c in bgrgb
-        )
-
+    if sw / sh > target_ratio:
+        # Source is wider than target.
+        # Need additional HEIGHT.
+        canvas_w = sw
+        canvas_h = int(round(sw / target_ratio))
     else:
+        # Source is taller/narrower than target.
+        # Need additional WIDTH.
+        canvas_h = sh
+        canvas_w = int(round(sh * target_ratio))
 
-        # Sample the source edge.
-        # This makes white source backgrounds stay white,
-        # grey stay grey, beige stay beige, etc.
-        arr = np.array(img, dtype=np.uint8)
+    canvas_w = max(canvas_w, sw)
+    canvas_h = max(canvas_h, sh)
 
-        d = max(
-            1,
-            min(
-                _BG_SAMPLE_DEPTH,
-                sh // 4,
-                sw // 4
-            )
+    extra_x = canvas_w - sw
+    extra_y = canvas_h - sh
+
+    # If the image already has the exact requested ratio,
+    # simply resize and return.
+    if extra_x == 0 and extra_y == 0:
+        return source.resize(
+            (TW, TH),
+            Image.Resampling.LANCZOS
         )
 
-        edge = np.concatenate([
-            arr[:d, :].reshape(-1, 3),
-            arr[sh-d:, :].reshape(-1, 3),
-            arr[:, :d].reshape(-1, 3),
-            arr[:, sw-d:].reshape(-1, 3),
-        ])
-
-        bg_rgb = tuple(
-            int(c)
-            for c in np.median(
-                edge,
-                axis=0
-            ).astype(np.uint8)
-        )
-
-    # --------------------------------------------------------
-    # Natural background extension
-    # --------------------------------------------------------
+    # ------------------------------------------------------------
+    # STEP 3
+    # Natural edge extension.
     #
-    # Example:
+    # DO NOT use Image.new(..., bg_rgb).
     #
-    # Source = 400 x 161
-    # Target = 1080 x 1350
+    # We extend the actual source pixels using reflection and
+    # then heavily soften ONLY the generated area.
     #
-    # We DO NOT crop the shoe.
+    # This removes the hard rectangular boundary that appeared
+    # in the previous implementation.
+    # ------------------------------------------------------------
+
+    src_np = np.asarray(source).copy()
+
+    # Reflection gives us colour/texture continuity instead of
+    # an artificial grey/white block.
+    pad_left = extra_x // 2
+    pad_right = extra_x - pad_left
+    pad_top = extra_y // 2
+    pad_bottom = extra_y - pad_top
+
+    extended = cv2.copyMakeBorder(
+        src_np,
+        pad_top,
+        pad_bottom,
+        pad_left,
+        pad_right,
+        borderType=cv2.BORDER_REFLECT_101
+    )
+
+    # ------------------------------------------------------------
+    # STEP 4
+    # Build a mask for ONLY the generated area.
+    # ------------------------------------------------------------
+
+    h, w = extended.shape[:2]
+
+    generated_mask = np.ones(
+        (h, w),
+        dtype=np.uint8
+    ) * 255
+
+    generated_mask[
+        pad_top:pad_top + sh,
+        pad_left:pad_left + sw
+    ] = 0
+
+    # Feather width adapts to the amount of extension.
+    extension = max(
+        extra_x,
+        extra_y
+    )
+
+    feather = max(
+        12,
+        min(
+            80,
+            extension // 3
+        )
+    )
+
+    # ------------------------------------------------------------
+    # STEP 5
+    # Blur the generated reflection heavily.
     #
-    # Instead we create enough background around the complete
-    # shoe and then resize the complete framed image.
-    #
+    # This prevents duplicated shoes/people/products appearing
+    # in the extended region.
+    # ------------------------------------------------------------
 
-    canvas_w = max(
-        sw,
-        int(round(frame_w))
-    )
-
-    canvas_h = max(
-        sh,
-        int(round(frame_h))
-    )
-
-    canvas = Image.new(
-        "RGB",
-        (canvas_w, canvas_h),
-        bg_rgb
-    )
-
-    paste_x = int(
-        round(
-            canvas_w / 2.0 -
-            sw / 2.0
+    blur_size = max(
+        21,
+        min(
+            101,
+            int(extension * 0.45) | 1
         )
     )
 
-    paste_y = int(
-        round(
-            canvas_h / 2.0 -
-            sh / 2.0
-        )
+    if blur_size % 2 == 0:
+        blur_size += 1
+
+    blurred = cv2.GaussianBlur(
+        extended,
+        (blur_size, blur_size),
+        0
     )
 
-    canvas.paste(
-        img,
-        (paste_x, paste_y)
+    # ------------------------------------------------------------
+    # STEP 6
+    # Keep the original source completely untouched.
+    # Blend only the extension into the source boundary.
+    # ------------------------------------------------------------
+
+    mask_f = generated_mask.astype(
+        np.float32
+    ) / 255.0
+
+    # Feather the boundary.
+    kernel = max(
+        3,
+        int(feather) | 1
     )
 
-    # Product centre after moving source onto canvas.
-    center_x = (
-        paste_x +
-        product_cx
+    soft_mask = cv2.GaussianBlur(
+        mask_f,
+        (kernel, kernel),
+        0
     )
 
-    center_y = (
-        paste_y +
-        product_cy
+    soft_mask = soft_mask[
+        :,
+        :,
+        None
+    ]
+
+    result_np = (
+        extended.astype(np.float32) *
+        (1.0 - soft_mask)
+        +
+        blurred.astype(np.float32) *
+        soft_mask
+    ).clip(0, 255).astype(np.uint8)
+
+    # Absolute protection: restore every original pixel.
+    result_np[
+        pad_top:pad_top + sh,
+        pad_left:pad_left + sw
+    ] = src_np
+
+    framed = Image.fromarray(
+        result_np,
+        mode="RGB"
     )
 
-    fw = max(
-        1,
-        int(round(frame_w))
-    )
+    # ------------------------------------------------------------
+    # STEP 7
+    # EXACT final output dimensions.
+    # ------------------------------------------------------------
 
-    fh = max(
-        1,
-        int(round(frame_h))
-    )
-
-    left = int(
-        round(
-            center_x -
-            fw / 2.0
-        )
-    )
-
-    top = int(
-        round(
-            center_y -
-            fh / 2.0
-        )
-    )
-
-    # --------------------------------------------------------
-    # Safety clamp
-    # --------------------------------------------------------
-
-    if fw <= canvas_w:
-
-        left = max(
-            0,
-            min(
-                left,
-                canvas_w - fw
-            )
-        )
-
-    else:
-
-        left = 0
-        fw = canvas_w
-
-    if fh <= canvas_h:
-
-        top = max(
-            0,
-            min(
-                top,
-                canvas_h - fh
-            )
-        )
-
-    else:
-
-        top = 0
-        fh = canvas_h
-
-    # --------------------------------------------------------
-    # Final frame
-    # --------------------------------------------------------
-
-    framed = canvas.crop(
-        (
-            left,
-            top,
-            left + fw,
-            top + fh
-        )
-    )
-
-    # EXACT final dimensions.
     output = framed.resize(
         (TW, TH),
         Image.Resampling.LANCZOS
     )
 
-    # --------------------------------------------------------
-    # Absolute ratio guard
-    # --------------------------------------------------------
+    # ------------------------------------------------------------
+    # STEP 8
+    # Final safety checks.
+    # ------------------------------------------------------------
 
     if output.size != (TW, TH):
-
         raise RuntimeError(
-            f"Ratio pipeline produced "
-            f"{output.size}; expected "
-            f"{(TW, TH)}"
+            f"Ratio conversion failed: "
+            f"got {output.size}, expected {(TW, TH)}"
+        )
+
+    actual_ratio = output.width / output.height
+
+    if abs(actual_ratio - target_ratio) > 0.0001:
+        raise RuntimeError(
+            f"Ratio conversion failed: "
+            f"got {actual_ratio:.6f}, "
+            f"expected {target_ratio:.6f}"
         )
 
     log.info(
-        "SMART RATIO | "
+        "SMART RATIO COMPLETE | "
+        f"source={img.size} | "
         f"target={TW}x{TH} | "
-        f"source={sw}x{sh} | "
-        f"product={product_w}x{product_h} | "
-        f"frame={fw}x{fh} | "
-        f"occupancy={fill:.0%}"
+        f"ratio={TW/TH:.6f} | "
+        f"extension={extra_x}x{extra_y}"
     )
 
     return output
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  7.  RATIO GUARD + SAVE
