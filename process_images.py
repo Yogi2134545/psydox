@@ -137,8 +137,8 @@ def unique_filename(folder: Path, filename: str) -> Path:
         while dest.exists():
             dest = folder / f"{stem}_{n}{suffix}"
             n += 1
-        # Claim the slot: create an empty placeholder so no other thread picks
-        # the same path before this caller has a chance to write the real file.
+        # Ensure parent directory exists, then claim the slot atomically.
+        folder.mkdir(parents=True, exist_ok=True)
         dest.touch()
     return dest
 
