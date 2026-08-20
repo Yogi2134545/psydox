@@ -919,20 +919,12 @@ def _process_one(args):
     try:
         processed = convert_to_4_5(img_copy, cfg)
     except Exception as e:
-        log.warning(f"  ⚠ convert error ({e}) — falling back to simple fit")
-        # Fallback: simple letterbox resize, always produces valid output
-        try:
-            img_rgb = img_copy.convert("RGB")
-            img_rgb.thumbnail((TW, TH), Image.LANCZOS)
-            canvas = Image.new("RGB", (TW, TH), (235, 235, 235))
-            ox = (TW - img_rgb.width)  // 2
-            oy = (TH - img_rgb.height) // 2
-            canvas.paste(img_rgb, (ox, oy))
-            processed = canvas
-        except Exception as e2:
-            log.error(f"  ✗ fallback also failed: {e2}")
-            result.update(status=f"FAILED_CONVERT: {e2}", is_skipped=True)
-            return result
+        log.error(f"  ✗ crop conversion failed: {e}")
+        result.update(
+            status=f"FAILED_CONVERT: {e}",
+            is_skipped=True
+        )
+        return result
 
     # ── Force EXACT target size — fix any 1-2px rounding from int arithmetic ─
     if processed.size != (TW, TH):
