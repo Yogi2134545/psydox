@@ -547,20 +547,23 @@ _poll_needed = job_id and (
 if _poll_needed:
     @st.fragment(run_every=2)
     def _poll():
-        jid = st.session_state.job_id
-        if not jid:
-            return
-        j = _read_job(jid)
-        if j.get("running"):
-            done   = j.get("done",   0)
-            total  = j.get("total",  0)
-            active = j.get("active", 0)
-            pct    = done / total if total > 0 else 0
-            label  = f"✅  {done} / {total} done — {int(pct*100)}%  |  ⬇️ {active} downloading now"
-            st.progress(pct, text=label)
-        elif (j.get("results") or j.get("error")) and not st.session_state.get("_shown_" + jid):
-            st.session_state["_shown_" + jid] = True
-            st.rerun(scope="app")
+        try:
+            jid = st.session_state.job_id
+            if not jid:
+                return
+            j = _read_job(jid)
+            if j.get("running"):
+                done   = j.get("done",   0)
+                total  = j.get("total",  0)
+                active = j.get("active", 0)
+                pct    = done / total if total > 0 else 0
+                label  = f"✅  {done} / {total} done — {int(pct*100)}%  |  ⬇️ {active} downloading now"
+                st.progress(pct, text=label)
+            elif (j.get("results") or j.get("error")) and not st.session_state.get("_shown_" + jid):
+                st.session_state["_shown_" + jid] = True
+                st.rerun(scope="app")
+        except Exception:
+            pass
 
     _poll()
 
