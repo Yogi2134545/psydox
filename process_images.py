@@ -218,9 +218,28 @@ def _resolve_url(url: str) -> str:
     return url
 
 def download_image(url: str, dest_folder: Path, cfg: dict) -> Path | None:
-    import random, socket as _socket
+    import random
     from urllib.parse import unquote
     direct_url = _resolve_url(url)
+
+    # Check URL cache — if this exact URL was already downloaded in this job,
+    # copy the cached file to dest_folder instead of hitting the CDN again.
+    _cache     = cfg.get("_url_cache")
+    _cache_lck = cfg.get("_url_cache_lock")
+    if _cache is not None and _cache_lck is not None:
+        with _cache_lck:
+            cached = _cache.get(direct_url)
+        if cached is not None:
+            if isinstance(cached, str):
+                return cached  # cached failure code (FAIL:*)
+            try:
+                ext  = cached.suffix
+                dest = unique_filename(dest_folder, f"cached_{cached.stem}{ext}")
+                shutil.copy2(cached, dest)
+                log.debug(f"    ✓ cache hit → {dest.name}")
+                return dest
+            except Exception:
+                pass  # cache copy failed — fall through to re-download
 
     for attempt in range(1, cfg["MAX_RETRIES"] + 1):
         try:
@@ -237,7 +256,11 @@ def download_image(url: str, dest_folder: Path, cfg: dict) -> Path | None:
             # Permanent failures — no point retrying (saves 2× wasted timeout per image)
             if resp.status_code in (403, 404, 410, 451):
                 log.error(f"    ✗ HTTP {resp.status_code} (won't retry): {url[:80]}")
-                return f"FAIL:HTTP_{resp.status_code}"
+                fail_code = f"FAIL:HTTP_{resp.status_code}"
+                if _cache is not None and _cache_lck is not None:
+                    with _cache_lck:
+                        _cache[direct_url] = fail_code
+                return fail_code
 
             resp.raise_for_status()
             ct = resp.headers.get("Content-Type", "")
@@ -250,13 +273,17 @@ def download_image(url: str, dest_folder: Path, cfg: dict) -> Path | None:
                 if "dropbox.com" in direct_url or "dropboxusercontent.com" in direct_url:
                     if "file deleted" in snippet or "this link no longer works" in snippet:
                         log.error(f"    ✗ Dropbox file deleted: {url[:80]}")
-                        return "FAIL:DROPBOX_DELETED"
+                        fail_code = "FAIL:DROPBOX_DELETED"
                     else:
                         log.error(f"    ✗ Dropbox blocked server download (link private or expired): {url[:80]}")
-                        return "FAIL:DROPBOX_BLOCKED"
+                        fail_code = "FAIL:DROPBOX_BLOCKED"
                 else:
                     log.error(f"    ✗ got HTML page instead of image: {url[:80]}")
-                    return "FAIL:HTML_RESPONSE"
+                    fail_code = "FAIL:HTML_RESPONSE"
+                if _cache is not None and _cache_lck is not None:
+                    with _cache_lck:
+                        _cache[direct_url] = fail_code
+                return fail_code
 
             ext      = guess_extension(direct_url, ct)
             raw_name = unquote(Path(urlparse(direct_url).path).name or hashlib.md5(url.encode()).hexdigest())
@@ -265,18 +292,15 @@ def download_image(url: str, dest_folder: Path, cfg: dict) -> Path | None:
                 raw_name += ext
             dest = unique_filename(dest_folder, raw_name)
 
-            # Write with per-chunk stall timeout via socket default timeout on this thread
-            old_to = _socket.getdefaulttimeout()
-            _socket.setdefaulttimeout(20)
-            try:
-                with open(dest, "wb") as f:
-                    for chunk in resp.iter_content(65536):
-                        if chunk:
-                            f.write(chunk)
-            finally:
-                _socket.setdefaulttimeout(old_to)
+            with open(dest, "wb") as f:
+                for chunk in resp.iter_content(65536):
+                    if chunk:
+                        f.write(chunk)
 
             log.debug(f"    ✓ downloaded → {dest.name}")
+            if _cache is not None and _cache_lck is not None:
+                with _cache_lck:
+                    _cache.setdefault(direct_url, dest)
             return dest
 
         except Exception as exc:
@@ -856,6 +880,13 @@ def process_all(cfg: dict,
     total = len(all_tasks)
     pack_images_by_style = {sc: [] for sc in style_map}
 
+    # URL download cache — same URL downloaded once, copies reused for duplicates.
+    # Eliminates redundant CDN requests that trigger rate-limiting.
+    import threading as _threading2
+    _url_cache      : dict = {}
+    _url_cache_lock = _threading2.Lock()
+    cfg["_url_cache"]      = _url_cache
+    cfg["_url_cache_lock"] = _url_cache_lock
 
     import threading as _threading
     _started_count = [0]
