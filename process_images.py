@@ -728,61 +728,316 @@ def remove_grid_lines(img: Image.Image) -> Image.Image:
 #  6.  MAIN CONVERSION  (smart-crop first, extend if needed)
 # ══════════════════════════════════════════════════════════════════════════════
 def convert_to_4_5(img: Image.Image, cfg: dict) -> Image.Image:
-    """Convert to the exact requested aspect ratio without artificial padding.
-
-    The selected TARGET_W/TARGET_H are authoritative.  The source is cropped
-    to the requested aspect ratio (centered on the product when a foreground
-    bounding box can be detected), then resized exactly to the target size.
-    No letterbox/canvas padding is introduced.
     """
-    TW, TH = int(cfg["TARGET_W"]), int(cfg["TARGET_H"])
+    Smart e-commerce ratio conversion.
+
+    Rules:
+    - TARGET_W / TARGET_H are authoritative.
+    - Detect the actual product.
+    - Keep the complete product visible.
+    - Keep product around 84% of its useful frame.
+    - If the source does not contain enough background for the requested
+      aspect ratio, extend the existing background naturally.
+    - Never use grey letterbox/pillarbox padding.
+    - Never crop the product just to force the ratio.
+    - Final output is EXACTLY TARGET_W x TARGET_H.
+    """
+
+    TW = int(cfg["TARGET_W"])
+    TH = int(cfg["TARGET_H"])
+
     if TW <= 0 or TH <= 0:
-        raise ValueError(f"Invalid target dimensions: {TW}x{TH}")
+        raise ValueError(
+            f"Invalid target dimensions: {TW}x{TH}"
+        )
 
     img = img.convert("RGB")
 
-    # Background replacement remains a separate operation; do not use it to
-    # create a canvas.  This preserves the existing BG behaviour while making
-    # the ratio operation itself crop-to-fill.
-    if cfg.get("BG_RGB") != "auto":
+    # --------------------------------------------------------
+    # Background handling
+    # --------------------------------------------------------
+
+    # Only replace background when the user explicitly selected
+    # a specific RGB colour.
+    #
+    # "Auto" keeps the original background so that any extension
+    # blends naturally with the source image.
+    bgrgb = cfg.get("BG_RGB")
+
+    if isinstance(bgrgb, (list, tuple)) and len(bgrgb) == 3:
         img = replace_mixed_background(img, cfg)
 
-    src_w, src_h = img.size
-    target_ratio = TW / TH
-    source_ratio = src_w / src_h
+    sw, sh = img.size
 
-    if abs(source_ratio - target_ratio) < 1e-6:
-        crop = img
-    elif source_ratio > target_ratio:
-        # Source is wider than target: crop left/right.
-        crop_w = max(1, int(round(src_h * target_ratio)))
-        left = (src_w - crop_w) // 2
-        try:
-            x1, y1, x2, y2 = get_product_bbox(img, False)
-            cx = (x1 + x2) / 2.0
-            left = int(round(cx - crop_w / 2.0))
-        except Exception:
-            pass
-        left = max(0, min(left, src_w - crop_w))
-        crop = img.crop((left, 0, left + crop_w, src_h))
-    else:
-        # Source is taller than target: crop top/bottom.
-        crop_h = max(1, int(round(src_w / target_ratio)))
-        top = (src_h - crop_h) // 2
-        try:
-            x1, y1, x2, y2 = get_product_bbox(img, False)
-            cy = (y1 + y2) / 2.0
-            top = int(round(cy - crop_h / 2.0))
-        except Exception:
-            pass
-        top = max(0, min(top, src_h - crop_h))
-        crop = img.crop((0, top, src_w, top + crop_h))
-
-    output = crop.resize((TW, TH), Image.LANCZOS)
-    if output.size != (TW, TH):
-        raise RuntimeError(
-            f"Ratio pipeline produced {output.size}; expected {(TW, TH)}"
+    if sw <= 0 or sh <= 0:
+        raise ValueError(
+            f"Invalid source dimensions: {sw}x{sh}"
         )
+
+    target_ratio = TW / TH
+
+    # --------------------------------------------------------
+    # Detect product
+    # --------------------------------------------------------
+
+    try:
+        x1, y1, x2, y2 = get_product_bbox(
+            img,
+            bool(cfg.get("USE_REMBG", False))
+        )
+
+        x1 = max(0, min(int(x1), sw - 1))
+        y1 = max(0, min(int(y1), sh - 1))
+        x2 = max(x1 + 1, min(int(x2), sw))
+        y2 = max(y1 + 1, min(int(y2), sh))
+
+    except Exception as exc:
+        log.warning(
+            f"Product bbox detection failed ({exc}); "
+            f"using full source."
+        )
+
+        x1, y1, x2, y2 = 0, 0, sw, sh
+
+    product_w = max(1, x2 - x1)
+    product_h = max(1, y2 - y1)
+
+    product_cx = (x1 + x2) / 2.0
+    product_cy = (y1 + y2) / 2.0
+
+    # --------------------------------------------------------
+    # Product occupancy
+    # --------------------------------------------------------
+    #
+    # Google Merchant Center recommends roughly 75-90%.
+    # 84% gives a professional catalogue framing.
+    #
+
+    fill = 0.84
+
+    frame_w = product_w / fill
+    frame_h = product_h / fill
+
+    # --------------------------------------------------------
+    # Expand frame to requested ratio.
+    #
+    # IMPORTANT:
+    # We EXPAND the frame.
+    # We do NOT shrink/crop the product.
+    # --------------------------------------------------------
+
+    if frame_w / frame_h > target_ratio:
+
+        # Product is relatively wide.
+        # Need additional height.
+        frame_h = frame_w / target_ratio
+
+    else:
+
+        # Product is relatively tall.
+        # Need additional width.
+        frame_w = frame_h * target_ratio
+
+    # --------------------------------------------------------
+    # Determine background colour for natural extension
+    # --------------------------------------------------------
+
+    if isinstance(bgrgb, (list, tuple)) and len(bgrgb) == 3:
+
+        bg_rgb = tuple(
+            int(c) for c in bgrgb
+        )
+
+    else:
+
+        # Sample the source edge.
+        # This makes white source backgrounds stay white,
+        # grey stay grey, beige stay beige, etc.
+        arr = np.array(img, dtype=np.uint8)
+
+        d = max(
+            1,
+            min(
+                _BG_SAMPLE_DEPTH,
+                sh // 4,
+                sw // 4
+            )
+        )
+
+        edge = np.concatenate([
+            arr[:d, :].reshape(-1, 3),
+            arr[sh-d:, :].reshape(-1, 3),
+            arr[:, :d].reshape(-1, 3),
+            arr[:, sw-d:].reshape(-1, 3),
+        ])
+
+        bg_rgb = tuple(
+            int(c)
+            for c in np.median(
+                edge,
+                axis=0
+            ).astype(np.uint8)
+        )
+
+    # --------------------------------------------------------
+    # Natural background extension
+    # --------------------------------------------------------
+    #
+    # Example:
+    #
+    # Source = 400 x 161
+    # Target = 1080 x 1350
+    #
+    # We DO NOT crop the shoe.
+    #
+    # Instead we create enough background around the complete
+    # shoe and then resize the complete framed image.
+    #
+
+    canvas_w = max(
+        sw,
+        int(round(frame_w))
+    )
+
+    canvas_h = max(
+        sh,
+        int(round(frame_h))
+    )
+
+    canvas = Image.new(
+        "RGB",
+        (canvas_w, canvas_h),
+        bg_rgb
+    )
+
+    paste_x = int(
+        round(
+            canvas_w / 2.0 -
+            sw / 2.0
+        )
+    )
+
+    paste_y = int(
+        round(
+            canvas_h / 2.0 -
+            sh / 2.0
+        )
+    )
+
+    canvas.paste(
+        img,
+        (paste_x, paste_y)
+    )
+
+    # Product centre after moving source onto canvas.
+    center_x = (
+        paste_x +
+        product_cx
+    )
+
+    center_y = (
+        paste_y +
+        product_cy
+    )
+
+    fw = max(
+        1,
+        int(round(frame_w))
+    )
+
+    fh = max(
+        1,
+        int(round(frame_h))
+    )
+
+    left = int(
+        round(
+            center_x -
+            fw / 2.0
+        )
+    )
+
+    top = int(
+        round(
+            center_y -
+            fh / 2.0
+        )
+    )
+
+    # --------------------------------------------------------
+    # Safety clamp
+    # --------------------------------------------------------
+
+    if fw <= canvas_w:
+
+        left = max(
+            0,
+            min(
+                left,
+                canvas_w - fw
+            )
+        )
+
+    else:
+
+        left = 0
+        fw = canvas_w
+
+    if fh <= canvas_h:
+
+        top = max(
+            0,
+            min(
+                top,
+                canvas_h - fh
+            )
+        )
+
+    else:
+
+        top = 0
+        fh = canvas_h
+
+    # --------------------------------------------------------
+    # Final frame
+    # --------------------------------------------------------
+
+    framed = canvas.crop(
+        (
+            left,
+            top,
+            left + fw,
+            top + fh
+        )
+    )
+
+    # EXACT final dimensions.
+    output = framed.resize(
+        (TW, TH),
+        Image.Resampling.LANCZOS
+    )
+
+    # --------------------------------------------------------
+    # Absolute ratio guard
+    # --------------------------------------------------------
+
+    if output.size != (TW, TH):
+
+        raise RuntimeError(
+            f"Ratio pipeline produced "
+            f"{output.size}; expected "
+            f"{(TW, TH)}"
+        )
+
+    log.info(
+        "SMART RATIO | "
+        f"target={TW}x{TH} | "
+        f"source={sw}x{sh} | "
+        f"product={product_w}x{product_h} | "
+        f"frame={fw}x{fh} | "
+        f"occupancy={fill:.0%}"
+    )
+
     return output
 
 
