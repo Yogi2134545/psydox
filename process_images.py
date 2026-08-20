@@ -162,6 +162,8 @@ _SESSION.headers.update({
     "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
     "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.google.com/",
 })
 # Large connection pool — supports 12 parallel workers without TCP stalls
 _adapter = HTTPAdapter(pool_connections=10, pool_maxsize=10, max_retries=0)
@@ -252,9 +254,10 @@ def download_image(url: str, dest_folder: Path, cfg: dict) -> Path | None:
                                 stream=True, allow_redirects=True)
 
             # Dropbox rate limit — back off and retry
-            if resp.status_code == 429:
-                wait = int(resp.headers.get("Retry-After", 5)) + random.uniform(1, 3)
-                log.warning(f"    429 rate limited — waiting {wait:.1f}s")
+            if resp.status_code in (429, 503):
+                raw_wait = int(resp.headers.get("Retry-After", 5))
+                wait = min(raw_wait, 15) + random.uniform(1, 3)  # cap at 15s max
+                log.warning(f"    {resp.status_code} rate limited (attempt {attempt}) — waiting {wait:.1f}s (server asked {raw_wait}s)")
                 time.sleep(wait)
                 continue
 
