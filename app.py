@@ -1,3 +1,6 @@
+
+
+
 """Psydox — Nike Image Processor"""
 import logging
 import streamlit as st
@@ -511,13 +514,21 @@ with st.sidebar:
 
     st.markdown("## 🖼️ Image Settings")
     rkeys = list(RATIO_PRESETS.keys())
-    ridx  = next((i for i,k in enumerate(rkeys) if "1080" in k), 0)
-    rc    = st.selectbox("Ratio Preset", rkeys, index=ridx)
+    ridx = next((i for i, k in enumerate(rkeys) if "4:5" in k), 0)
+    rc = st.selectbox("Ratio Preset", rkeys, index=ridx,
+                      help="Selected preset controls the final output exactly. No padding/letterbox is added.")
     preset_size = RATIO_PRESETS[rc]
-    tw, th = preset_size if preset_size is not None else (1080, 1350)
-    col_w, col_h = st.columns(2)
-    tw = col_w.number_input("Width (px)",  360, 4320, int(tw), key=f"tw_{rc}")
-    th = col_h.number_input("Height (px)", 450, 5400, int(th), key=f"th_{rc}")
+    if preset_size is not None:
+        tw, th = int(preset_size[0]), int(preset_size[1])
+        col_w, col_h = st.columns(2)
+        col_w.number_input("Width (px)", 360, 4320, tw, disabled=True, key=f"preset_w_{rc}")
+        col_h.number_input("Height (px)", 450, 5400, th, disabled=True, key=f"preset_h_{rc}")
+        st.caption(f"✓ Exact output: **{tw} × {th}px** | Ratio **{tw/th:.4f}:1** | **No padding / no letterbox**")
+    else:
+        col_w, col_h = st.columns(2)
+        tw = col_w.number_input("Width (px)", 360, 4320, 1080, key="custom_tw")
+        th = col_h.number_input("Height (px)", 450, 5400, 1350, key="custom_th")
+        st.caption(f"✓ Exact custom output: **{tw} × {th}px** | Ratio **{tw/th:.4f}:1** | **No padding / no letterbox**")
     jq = st.slider("JPEG Quality", 50, 95, int(DEFAULT_JPEG_QUALITY))
 
     st.markdown("## 🌐 Network")
