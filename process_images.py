@@ -663,19 +663,45 @@ def remove_grid_lines(img: Image.Image) -> Image.Image:
 #  6.  MAIN CONVERSION  (smart-crop first, extend if needed)
 # ══════════════════════════════════════════════════════════════════════════════
 def convert_to_4_5(img: Image.Image, cfg: dict) -> Image.Image:
+    import numpy as _np
+
     TW, TH = cfg["TARGET_W"], cfg["TARGET_H"]
     img = img.convert("RGB")
     orig_w, orig_h = img.size
 
-    # Cover fill: scale so the image fills the entire target, then center-crop.
-    # No padding, no background bars — image content fills every pixel.
-    scale = min(max(TW / orig_w, TH / orig_h), 2.0)
+    # Fit inside target — no cropping, all content preserved
+    scale = min(TW / orig_w, TH / orig_h, 2.0)
     nw = max(1, round(orig_w * scale))
     nh = max(1, round(orig_h * scale))
     scaled = img.resize((nw, nh), Image.LANCZOS)
-    left = (nw - TW) // 2
-    top  = (nh - TH) // 2
-    return scaled.crop((left, top, left + TW, top + TH))
+    arr = _np.array(scaled, dtype=_np.uint8)
+
+    px = (TW - nw) // 2
+    py = (TH - nh) // 2
+
+    _bgr = cfg.get("BG_RGB")
+    if isinstance(_bgr, (list, tuple)) and len(_bgr) == 3:
+        canvas = _np.full((TH, TW, 3), [int(c) for c in _bgr], dtype=_np.uint8)
+    else:
+        # Sample the image's own edge color so the margin fill is seamless
+        E = min(4, nh, nw)
+        top_c    = arr[:E,  :].mean(axis=(0, 1)).astype(_np.uint8).tolist()
+        bot_c    = arr[-E:, :].mean(axis=(0, 1)).astype(_np.uint8).tolist()
+        left_c   = arr[:,  :E].mean(axis=(0, 1)).astype(_np.uint8).tolist()
+        right_c  = arr[:, -E:].mean(axis=(0, 1)).astype(_np.uint8).tolist()
+        corner_c = arr[:E, :E].mean(axis=(0, 1)).astype(_np.uint8).tolist()
+        canvas = _np.full((TH, TW, 3), corner_c, dtype=_np.uint8)
+        if py > 0:
+            canvas[:py, px:px + nw]      = top_c
+        if py + nh < TH:
+            canvas[py + nh:, px:px + nw] = bot_c
+        if px > 0:
+            canvas[py:py + nh, :px]      = left_c
+        if px + nw < TW:
+            canvas[py:py + nh, px + nw:] = right_c
+
+    canvas[py:py + nh, px:px + nw] = arr
+    return Image.fromarray(canvas)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
