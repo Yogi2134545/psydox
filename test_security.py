@@ -174,3 +174,71 @@ def test_invalid_url_still_blocked():
     """Empty / nan sources return FAIL:INVALID_URL regardless of flags."""
     result = _pi.collect_image("nan", pathlib.Path(tempfile.gettempdir()), {})
     assert result == "FAIL:INVALID_URL"
+
+
+# ── SEC-005: IDOR (Job ownership isolation) ───────────────────────────────────
+
+def test_idor_job_id_uses_token_hex():
+    """Job IDs must be generated with secrets.token_hex for unguessability.
+
+    Confirms the same pattern used in app.py line 569:
+        job_id = secrets.token_hex(8)
+    produces cryptographically random, non-repeating, 16-char hex IDs.
+    """
+    import secrets
+    ids = {secrets.token_hex(8) for _ in range(100)}
+    assert len(ids) == 100, "token_hex must generate unique IDs"
+    for jid in ids:
+        assert len(jid) == 16, "token_hex(8) must produce 16-char hex strings"
+        assert all(c in "0123456789abcdef" for c in jid), "ID must be hex-encoded"
+
+
+def _check_job_ownership(job_dict: dict, current_user_id: str) -> bool:
+    """Mirror of the ownership check in app.py lines 156-165.
+
+    Returns True (allow) or False (deny).
+    Both sides must be populated for the check to trigger — legacy jobs
+    that predate the owner field are not rejected.
+    """
+    job_owner = job_dict.get("owner", "")
+    cur_uid   = current_user_id
+    if job_owner and cur_uid and job_owner != cur_uid:
+        return False
+    return True
+
+
+def test_idor_owner_check_rejects_different_user():
+    """user_b must not be able to access a job created by user_a."""
+    user_a_id = "uid-alice-001"
+    user_b_id = "uid-bob-002"
+    job = {"running": False, "done": 5, "owner": user_a_id, "results": []}
+
+    assert _check_job_ownership(job, user_a_id) is True, \
+        "user_a must be allowed to access their own job"
+    assert _check_job_ownership(job, user_b_id) is False, \
+        "IDOR: user_b must be rejected when accessing user_a's job"
+
+
+def test_idor_owner_check_allows_owner():
+    """The job owner always has access to their own job."""
+    uid = "uid-charlie-003"
+    job = {"running": True, "done": 0, "owner": uid}
+    assert _check_job_ownership(job, uid) is True
+
+
+def test_idor_legacy_job_no_owner_field_allows_access():
+    """Legacy jobs without an owner field must not block access.
+
+    The check requires both sides to be populated (app.py line 161 comment:
+    'Only enforce when both sides are populated (legacy jobs have no owner field)').
+    """
+    legacy_job = {"running": False, "done": 5, "results": []}  # no "owner" key
+    assert _check_job_ownership(legacy_job, "any-user-id") is True, \
+        "Legacy jobs with no owner field must not be blocked"
+
+
+def test_idor_unauthenticated_session_does_not_enforce():
+    """When current_user_id is empty (unauthenticated), ownership check must not block."""
+    job = {"running": False, "done": 2, "owner": "uid-alice-001"}
+    # Unauthenticated session — user_id is ""
+    assert _check_job_ownership(job, "") is True

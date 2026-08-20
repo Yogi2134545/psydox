@@ -261,7 +261,11 @@ def render_studio(
 ) -> None:
     """Render the full Psydox Studio workspace."""
     _owner_email = os.environ.get("OWNER_EMAIL", "").strip()
-    if _owner_email and user_email != _owner_email:
+    if not _owner_email:
+        st.error("AI Studio is not configured. Set OWNER_EMAIL in Railway environment variables.")
+        st.stop()
+        return
+    if user_email != _owner_email:
         st.error("Access denied. AI Studio is available to authorized users only.")
         st.stop()
         return

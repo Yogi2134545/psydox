@@ -117,9 +117,11 @@ if st.session_state.job_id is None:
         zp = _job_dir(_url_zip) / "_psydox_output.zip"
         if zp.exists():
             if _url_zip not in _JOBS:
-                _JOBS[_url_zip] = {"running": False, "done": 0, "total": 0,
-                                   "results": {"total":0,"success":0,"failed":0,"skipped":0},
-                                   "error": None, "zip_path": str(zp), "previews": []}
+                with _JOBS_LOCK:
+                    if _url_zip not in _JOBS:
+                        _JOBS[_url_zip] = {"running": False, "done": 0, "total": 0,
+                                           "results": {"total":0,"success":0,"failed":0,"skipped":0},
+                                           "error": None, "zip_path": str(zp), "previews": []}
             st.session_state.job_id = _url_zip
 
 # ── Stale-job check: if memory has no thread but disk says running ─────────────
@@ -129,7 +131,8 @@ if _jid and _jid not in _JOBS:
     if _d.get("running"):
         _d["running"] = False
         _d["error"]   = "STALE"
-        _JOBS[_jid]   = _d
+        with _JOBS_LOCK:
+            _JOBS[_jid] = _d
         _flush_job(_jid)
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -172,26 +175,30 @@ if st.session_state.job_id:
 def _worker(job_id, cfg, out_dir, stop_event=None):
     try:
         def _cb(done, total, active=0, started=0):
-            _JOBS[job_id]["done"]    = done
-            _JOBS[job_id]["total"]   = total
-            _JOBS[job_id]["active"]  = active
-            _JOBS[job_id]["started"] = started
             _max_prev = cfg.get("_max_previews", 100)
+            _new_previews = []
             try:
                 while True:
-                    _JOBS[job_id]["previews"].append(_preview_queue.get_nowait())
-                    if len(_JOBS[job_id]["previews"]) > _max_prev:
-                        _JOBS[job_id]["previews"] = _JOBS[job_id]["previews"][-_max_prev:]
+                    _new_previews.append(_preview_queue.get_nowait())
             except Exception:
                 pass
+            with _JOBS_LOCK:
+                _JOBS[job_id]["done"]    = done
+                _JOBS[job_id]["total"]   = total
+                _JOBS[job_id]["active"]  = active
+                _JOBS[job_id]["started"] = started
+                _JOBS[job_id]["previews"].extend(_new_previews)
+                if len(_JOBS[job_id]["previews"]) > _max_prev:
+                    _JOBS[job_id]["previews"] = _JOBS[job_id]["previews"][-_max_prev:]
             if done % 10 == 0:
                 _flush_job(job_id)
 
         res = process_all(cfg, progress_cb=_cb, stop_event=stop_event)
 
+        _drain_previews = []
         try:
             while True:
-                _JOBS[job_id]["previews"].append(_preview_queue.get_nowait())
+                _drain_previews.append(_preview_queue.get_nowait())
         except Exception:
             pass
 
@@ -209,13 +216,17 @@ def _worker(job_id, cfg, out_dir, stop_event=None):
             ztmp.rename(zp)
             zip_path = str(zp)
 
-        _JOBS[job_id]["zip_path"] = zip_path
-        _JOBS[job_id]["results"]  = res
+        with _JOBS_LOCK:
+            _JOBS[job_id]["previews"].extend(_drain_previews)
+            _JOBS[job_id]["zip_path"] = zip_path
+            _JOBS[job_id]["results"]  = res
     except Exception:
         import traceback
-        _JOBS[job_id]["error"] = traceback.format_exc()
+        with _JOBS_LOCK:
+            _JOBS[job_id]["error"] = traceback.format_exc()
     finally:
-        _JOBS[job_id]["running"] = False
+        with _JOBS_LOCK:
+            _JOBS[job_id]["running"] = False
         _flush_job(job_id)
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -277,7 +288,8 @@ def _poll():
                 time.time() - j["started_at"] > _MAX_JOB_SECS:
             j["running"] = False
             j["error"]   = "TIMEOUT: job exceeded maximum run time"
-            _JOBS[jid]   = j
+            with _JOBS_LOCK:
+                _JOBS[jid] = j
             _flush_job(jid)
             st.rerun(scope="app")
             return

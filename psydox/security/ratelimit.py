@@ -16,13 +16,6 @@ import time
 import logging
 from typing import Optional
 
-try:
-    import streamlit as st
-    _HAS_ST = True
-except ImportError:
-    st = None  # type: ignore
-    _HAS_ST = False
-
 _log = logging.getLogger("psydox.security.ratelimit")
 
 
@@ -78,12 +71,14 @@ _FALLBACK_STORE: dict = {}
 
 
 def _rl_store() -> dict:
-    if _HAS_ST:
+    try:
+        import streamlit as st  # lazy — only when running inside Streamlit
         @st.cache_resource
         def _store():
             return {}
         return _store()
-    return _FALLBACK_STORE
+    except Exception:
+        return _FALLBACK_STORE
 
 
 def get_rate_limiter() -> RateLimiter:

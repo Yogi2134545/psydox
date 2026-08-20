@@ -57,7 +57,6 @@ class AuthService:
         except Exception as exc:
             _log.warning("users.yaml migration failed (non-fatal): %s", exc)
         self._ensure_system_owner()
-        self._sync_yaml_roles()
         self._migrated = True
 
     def _sync_yaml_roles(self) -> None:

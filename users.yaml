@@ -8,9 +8,19 @@
 # rotate ALL listed passwords immediately (BFG / git filter-branch needed
 # to purge the history — that must be done manually outside this codebase).
 
+yogeshwar@popclub.co:
+  name: Yogeshwar
+  role: owner
+  password_hash: ""
+
+surya.pant@popclub.co:
+  name: Surya
+  role: admin
+  password_hash: ""
+
 ankit@popclub.co:
   name: Ankit
-  role: operator
+  role: manager
   password_hash: ""
 
 bhargavi.kt@popclub.co:
@@ -27,11 +37,3 @@ test@popclub.co:
   name: TestUser
   role: operator
   password_hash: ""
-
-surya.pant@popclub.co:
-  name: Surya
-  role: operator
-  password_hash: ""
-
-# Owner is NOT listed here — the login bootstrap handles first-login creation.
-# yogeshwar@popclub.co is auto-created with the submitted password on first login.

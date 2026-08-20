@@ -40,7 +40,7 @@ BG_PRESETS = {
 }
 # ══════════════════════════════════════════════════════════════════════════════
 
-import os, re, csv, time, shutil, logging, hashlib, threading, queue, sys, socket
+import os, re, csv, time, shutil, logging, hashlib, threading, queue, sys
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
@@ -238,6 +238,8 @@ def _validate_url_safe(url: str) -> None:
     host = (parsed.hostname or "").lower()
     if _SSRF_BLOCKED.match(host):
         raise ValueError(f"Blocked — internal/metadata host: {host!r}")
+    if host.endswith('.local'):
+        raise ValueError(f"Blocked — mDNS host: {host!r}")
 
 
 def download_image(url: str, dest_folder: Path, cfg: dict) -> Path | None:
